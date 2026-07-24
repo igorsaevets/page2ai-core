@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this library, please cite it as below."
+title: "@page2ai/core — HTML to Markdown for LLM context"
+abstract: >-
+  A TypeScript library that extracts clean Markdown from any web page
+  HTML. Node.js (linkedom) and browser adapters. Powers the Page2AI
+  Chrome extension and @page2ai/mcp server.
+type: software
+version: 0.1.0
+date-released: 2026-07-24
+license: MIT
+repository-code: "https://github.com/igorsaevets/page2ai-core"
+url: "https://igorsaevets.github.io/page2ai-docs/"
+authors:
+  - given-names: Igor
+    family-names: Saevets
+    orcid: "https://orcid.org/0009-0006-8636-1377"
+    email: igorsaevets@gmail.com
+    website: "https://igorsaevets.github.io/page2ai-docs/about/"
+keywords:
+  - html-to-markdown
+  - linkedom
+  - typescript
+  - web-scraping
+  - llm
+  - rag
+  - page2ai
+identifiers:
+  - type: url
+    value: "https://www.npmjs.com/package/@page2ai/core"
+    description: npm package
