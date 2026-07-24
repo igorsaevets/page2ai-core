@@ -1,0 +1,81 @@
+{
+  "name": "@page2ai/core",
+  "version": "0.1.0",
+  "description": "Extract clean Markdown from any web page HTML. Works in Node.js (via linkedom) and browsers. Powers the Page2AI extension and @page2ai/mcp server.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    },
+    "./shared/types": {
+      "types": "./dist/shared/types.d.ts",
+      "import": "./dist/shared/types.js"
+    },
+    "./shared/profiles": {
+      "types": "./dist/shared/profiles.d.ts",
+      "import": "./dist/shared/profiles.js"
+    }
+  },
+  "main": "./dist/node/index.js",
+  "types": "./dist/node/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "css.escape": "^1.5.1",
+    "linkedom": "^0.18.11"
+  },
+  "devDependencies": {
+    "@types/css.escape": "^1.5.2",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  },
+  "keywords": [
+    "html-to-markdown",
+    "markdown",
+    "webpage-to-markdown",
+    "web-scraping",
+    "llm",
+    "ai",
+    "mcp",
+    "linkedom",
+    "readability",
+    "page2ai"
+  ],
+  "author": "Igor Saevets, AI Expert and Entrepreneur",
+  "license": "MIT",
+  "homepage": "https://github.com/igorsaevets/page2ai-core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/igorsaevets/page2ai-core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/igorsaevets/page2ai-core/issues"
+  }
+}
