@@ -81,7 +81,7 @@ Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `ht
 
 - **v0.1** (current) — Node basic renderer, browser adapter interface published
 - **v0.2** — full port of `lib/core/html-to-md.ts` via PageAdapter, browser entry migrated from extension repo
-- **v0.3** — profile auto-detection in Node path, structured-data extraction
+- **v0.3** — headless-browser adapter (Playwright or Puppeteer) for React/Vue/SPA rendering, profile auto-detection in Node path, structured-data extraction. Client-rendered pages (e.g. platform.claude.com) that ship a nearly empty `<div id="root">` from static HTML currently produce a graceful fallback error under v0.1 — the SPA adapter in v0.3 will handle them.
 - **v0.4** — official-markdown fallback (llms.txt, .md sibling URLs), MDX handling
 
 ## Architecture
