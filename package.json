@@ -68,9 +68,13 @@
     "readability",
     "page2ai"
   ],
-  "author": "Igor Saevets, AI Expert and Entrepreneur",
+  "author": {
+    "name": "Igor Saevets",
+    "email": "igorsaevets@gmail.com",
+    "url": "https://igorsaevets.github.io/page2ai-docs/about/"
+  },
   "license": "MIT",
-  "homepage": "https://github.com/igorsaevets/page2ai-core",
+  "homepage": "https://igorsaevets.github.io/page2ai-docs/",
   "repository": {
     "type": "git",
     "url": "https://github.com/igorsaevets/page2ai-core.git"
