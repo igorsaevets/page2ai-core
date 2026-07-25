@@ -39,7 +39,7 @@ export interface ConversionResult {
   baseUrl: string;
   charCount: number;
   extractedAt: string;
-  source: 'html-parse' | 'md-suffix' | 'llms-txt';
+  source: 'html-parse' | 'md-suffix' | 'content-negotiation' | 'llms-txt';
 }
 
 export const htmlToMarkdown = (
@@ -94,9 +94,16 @@ export const htmlToMarkdown = (
   }
 };
 
-// Wrap a raw markdown response (from .md suffix) in the frontmatter block so
-// downstream consumers see the same shape as html-to-md output.
-const wrapMdWithFrontmatter = (raw: string, url: string, title: string): string => {
+// Wrap a raw markdown response in the frontmatter block so downstream consumers
+// see the same shape as html-to-md output. `via` records which channel produced
+// it, because a caller measuring conversion quality needs to know that no
+// conversion happened.
+const wrapMdWithFrontmatter = (
+  raw: string,
+  url: string,
+  title: string,
+  via: 'md-suffix' | 'content-negotiation',
+): string => {
   const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
   const fm = [
     '---',
@@ -105,12 +112,20 @@ const wrapMdWithFrontmatter = (raw: string, url: string, title: string): string 
     `captured_at: ${yq(new Date().toISOString())}`,
     `extractor: ${yq('page2ai-core')}`,
     `extractor_version: ${yq('0.1.0')}`,
-    `extractor_source: ${yq('md-suffix')}`,
+    `extractor_source: ${yq(via)}`,
     '---',
     '',
   ];
   return fm.join('\n') + raw.replace(/^﻿/, '').trim() + '\n';
 };
+
+// A Markdown body must never reach the HTML parser. linkedom will happily accept
+// it, find no <article> or <main>, and return an empty document, which reads as
+// "extraction failed" when in fact the server handed over exactly what was asked
+// for. See page2ai-benchmark RETRACTION-2026-07-25.md.
+const MARKDOWN_CONTENT_TYPE = /^(text\/markdown|text\/x-markdown)/i;
+
+const looksLikeHtml = (s: string): boolean => /^\s*<(!doctype|html)\b/i.test(s);
 
 // Attempt the URL.md convention (Mintlify, Anthropic docs, some others).
 // Returns null if not applicable or on any failure — callers fall back to HTML.
@@ -130,10 +145,10 @@ const tryMdSuffix = async (
     });
     if (!resp.text || resp.text.length < 32) return null;
     // Cheap sanity: markdown response should not look like HTML
-    if (/^\s*<(!doctype|html)/i.test(resp.text)) return null;
+    if (looksLikeHtml(resp.text)) return null;
     const title = (resp.text.match(/^#\s+(.+)$/m)?.[1] || '').trim();
     return {
-      markdown: wrapMdWithFrontmatter(resp.text, resp.finalUrl, title),
+      markdown: wrapMdWithFrontmatter(resp.text, resp.finalUrl, title, 'md-suffix'),
       title,
       baseUrl: resp.finalUrl,
       charCount: resp.text.length,
@@ -160,6 +175,26 @@ export const fetchAndConvert = async (
     maxBytes: opts.maxBytes,
     userAgent: opts.userAgent,
   });
+
+  // The Accept header above lists text/markdown, and a growing number of
+  // documentation platforms honour it: Fumadocs, Mintlify, Vercel and Supabase
+  // all answer `content-type: text/markdown` with the page already converted.
+  // Handing that to the HTML parser produces an empty document. Return it as-is
+  // and say which channel it came from.
+  if (MARKDOWN_CONTENT_TYPE.test(resp.contentType) && !looksLikeHtml(resp.text)) {
+    const raw = resp.text.replace(/^﻿/, '').trim();
+    const title = (raw.match(/^#\s+(.+)$/m)?.[1] || '').trim();
+    const markdown = wrapMdWithFrontmatter(raw, resp.finalUrl, title, 'content-negotiation');
+    return {
+      markdown,
+      title,
+      baseUrl: resp.finalUrl,
+      charCount: raw.length,
+      extractedAt: new Date().toISOString(),
+      source: 'content-negotiation',
+    };
+  }
+
   return htmlToMarkdown(resp.text, { ...opts, baseUrl: opts.baseUrl ?? resp.finalUrl });
 };
 
