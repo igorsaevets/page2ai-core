@@ -123,6 +123,25 @@ npm run typecheck # tsc --noEmit
 - [`@page2ai/mcp`](https://github.com/igorsaevets/page2ai-mcp) — MCP server for Claude Desktop, Cursor, Windsurf, Zed
 - [Software Heritage archive](https://archive.softwareheritage.org/) — SWHID `swh:1:snp:05123c51ef9e7c0aeb06f42b1263c07a8d26999a`
 
+
+## Build provenance
+
+Releases from v0.1.1 onward are published from GitHub Actions with
+[npm provenance](https://docs.npmjs.com/generating-provenance-statements). Each published
+version carries a Sigstore attestation recording which commit and which workflow run produced
+the tarball, logged in the public Rekor transparency ledger. npmjs.com shows a provenance badge
+next to the version, linking to both.
+
+Verify it yourself, without trusting this README:
+
+```bash
+npm audit signatures
+npm view @page2ai/core --json | jq '.dist.attestations'
+```
+
+The point is that the link between the source you can read and the artifact you install is
+checkable by a third party rather than asserted here.
+
 ## License
 
 MIT — Copyright (c) 2026 Igor Saevets. See [LICENSE](./LICENSE).
