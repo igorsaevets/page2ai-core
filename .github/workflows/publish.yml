@@ -7,6 +7,14 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# GitHub's implicit shell for `run:` is `bash -e {0}` -- `-e` is on, `pipefail` is
+# NOT. So `X=$(cmd | head -n 1)` succeeds with X empty when `cmd` fails, because
+# `head` is the last command in the pipe. Naming the shell explicitly gets
+# `bash --noprofile --norc -eo pipefail {0}`, which fails the step instead.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   publish:
     name: Build, test and publish
