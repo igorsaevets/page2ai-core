@@ -129,15 +129,39 @@ describe('pickContentRoot', () => {
     expect(out).not.toContain('Other permits');
   });
 
-  it('prefers the single <article> when there is no semantic container to compare against', () => {
-    // With no <main> and no [role=main] the comparison has no meaning: a raw <body> carries every
-    // sidebar that is not marked up as chrome. The historical article-first choice is kept there
-    // rather than guessed at, so this asserts the fallback did not change.
+  it('applies the same rule when the page has no <main> at all', () => {
+    // The one that mattered most, and it was predicted from the control flow rather than found
+    // by running anything. An earlier version short-cut `if (!semantic) return best.el`, which
+    // reinstated the exact behaviour this file exists to prevent. On a card grid inside
+    // <div class="sl-main"> instead of <main> - what older Starlight themes and many docs
+    // templates emit - it returned 32 characters for the whole page. The layout family that
+    // motivated the fix was still broken by the fix.
+    const cards = ['Install Astro', 'Editor Setup', 'Project Structure', 'Deploy', 'Integrations']
+      .map((t, i) => `<article class="card"><p class="title">${t}</p><div class="body">${'Card body text. '.repeat(6 + i)}</div></article>`)
+      .join('');
+    const out = md(`<html><head><title>Getting Started</title></head><body>
+      <div class="header"><a href="/">Astro</a></div>
+      <div class="sl-main">
+        <h1>What will you build with Astro?</h1>
+        <p>${'Start with one of our official starter themes. '.repeat(8)}</p>
+        <div class="card-grid">${cards}</div>
+        <h2>Next steps</h2><p>${'Read the guides about routing. '.repeat(8)}</p>
+      </div></body></html>`);
+    for (const t of ['Install Astro', 'Editor Setup', 'Project Structure', 'Deploy', 'Integrations']) {
+      expect(out).toContain(t);
+    }
+    expect(out).toContain('What will you build with Astro?');
+    expect(out).toContain('Next steps');
+  });
+
+  it('still narrows to a single dominant <article> when there is no <main>', () => {
+    // The other half of the same branch: without a semantic container a dominant article must
+    // still win, or every blog post on a template without <main> starts carrying its sidebar.
     const out = md(`<html><head><title>T</title></head><body>
       <div class="sidebar"><a href="/1">One</a><a href="/2">Two</a></div>
-      <article><h1>Post</h1><p>The post body.</p></article>
+      <article><h1>Post</h1><p>${'The post body is long enough to dominate the page. '.repeat(40)}</p></article>
     </body></html>`);
     expect(out).toContain('# Post');
-    expect(out).toContain('The post body.');
+    expect(out).toContain('The post body is long enough to dominate the page.');
   });
 });

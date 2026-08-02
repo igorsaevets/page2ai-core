@@ -199,15 +199,20 @@ const pickContentRoot = (doc: Document): Element | null => {
 
   if (articles.length) {
     const best = articles[0];
-    // Without a semantic container the comparison has no meaning - a raw <body> carries every
-    // sidebar and footer that is not marked up as chrome - so there we keep the historical
-    // article-first choice rather than guess.
-    if (!semantic) return best.el;
-
     // An <article> replaces the container when it dominates the container, OR when it dwarfs
     // every other <article> present. Either test alone has a blind spot the other covers:
     // the ratio misses a real post buried under a related-posts rail, and the sibling test
     // says nothing at all when there is only one <article> on the page.
+    //
+    // Both tests run whether or not the container is semantic. An earlier version short-cut
+    // `if (!semantic) return best.el`, reasoning that a raw <body> carries every sidebar not
+    // marked up as chrome and so the comparison meant nothing. That reasoning was right and the
+    // conclusion was still wrong: it reinstated exactly the behaviour this function exists to
+    // replace. Measured on a card grid inside `<div class="sl-main">` rather than <main> - a
+    // shape older Starlight themes and many docs templates emit - it returned 32 characters for
+    // the whole page, reproducing the original defect on the layout family that motivated the
+    // fix. A body-relative ratio is a weaker signal than a <main>-relative one, but a weak
+    // signal beats a known-bad default.
     const containerLen = contentTextLength(container);
     const runnerUp = articles[1]?.n ?? 0;
     const dominatesContainer = containerLen > 0 && best.n / containerLen >= ARTICLE_DOMINANCE;
