@@ -104,16 +104,91 @@ const buildFrontmatter = (doc: Document, baseUrl: string): string[] => {
   return fm;
 };
 
+// Tags that are page furniture rather than page content. Used ONLY to score candidate roots,
+// never to skip anything during rendering: once a root is chosen the walker still emits
+// everything inside it.
+const CHROME_TAGS = new Set([
+  'NAV', 'HEADER', 'FOOTER', 'ASIDE', 'SCRIPT', 'STYLE', 'NOSCRIPT',
+  'TEMPLATE', 'SVG', 'CANVAS', 'FORM', 'DIALOG',
+]);
+
+// Length of the text a reader would call content: chrome and hidden subtrees excluded.
+// Deliberately counts characters and not nodes - a nav with 60 one-word links outnumbers an
+// article's paragraphs, so a node count ranks the navigation above the prose.
+const contentTextLength = (el: Element): number => {
+  let n = 0;
+  const walk = (node: Node): void => {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      n += (node.textContent || '').replace(/\s+/g, ' ').trim().length + 1;
+      return;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) return;
+    const e = node as Element;
+    if (CHROME_TAGS.has(e.tagName)) return;
+    if ((e.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return;
+    if (e.hasAttribute('hidden')) return;
+    for (const c of e.childNodes) walk(c);
+  };
+  walk(el);
+  return n;
+};
+
+// Minimum share of its container's content text that an <article> must carry before we accept
+// it AS the page. Measured 2026-08-02 on raw server HTML - the bytes this path actually
+// receives, not a browser-rendered copy:
+//
+//   github.com/modelcontextprotocol/servers    1 article    5923/7065 = 0.84   the README
+//   github.com/igorsaevets/page2ai-mcp         1 article    6048/7438 = 0.81   the README
+//   docs.astro.build/en/getting-started/       5 articles    300/1362 = 0.22   <article class="card">
+//   starlight.astro.build/                     5 articles    213/3171 = 0.07   cards again
+//   blog.cloudflare.com/                      19 articles    471/6640 = 0.07   post teasers
+//
+// Real articles cluster at 0.8 and above, cards and teasers at 0.25 and below, and nothing
+// observed lands between - so this threshold sits in an empty gap rather than on a boundary
+// case it was fitted to.
+const ARTICLE_DOMINANCE = 0.5;
+
+// linkedom can hand back a <body> with zero children while the content sits under
+// documentElement. Reproduced 2026-08-02 on nodejs.org/api/fs.html: body.childNodes.length is 0
+// and documentElement.textContent is 256,836 characters. Trusting doc.body there yields the
+// "no extractable body content" comment for a page that is almost entirely content.
+const usableBody = (doc: Document): Element | null => {
+  const body = doc.body as unknown as Element | null;
+  if (body && body.childNodes && body.childNodes.length > 0) return body;
+  return (doc.documentElement as unknown as Element) || body || null;
+};
+
 const pickContentRoot = (doc: Document): Element | null => {
-  const cand =
-    doc.querySelector('main article') ||
-    doc.querySelector('article') ||
-    doc.querySelector('main') ||
-    doc.querySelector('[role="main"]') ||
-    doc.body ||
-    doc.documentElement ||
-    null;
-  return (cand as unknown as Element) || null;
+  // The semantic container first. <main> is unique per document by spec, so unlike <article>
+  // it cannot be a component.
+  const semantic =
+    (doc.querySelector('main') as unknown as Element | null) ||
+    (doc.querySelector('[role="main"]') as unknown as Element | null);
+  const container = semantic || usableBody(doc);
+  if (!container) return null;
+
+  // Why this is not `doc.querySelector('main article') || doc.querySelector('article')`:
+  // querySelector returns the FIRST match in document order, and HTML5 defines <article> as any
+  // independently distributable composition - which design systems spend on cards, teasers and
+  // comments. On docs.astro.build the first <article> is `class="card sl-flex"` holding 155
+  // characters while <main> holds 1,362, so the tool emitted a heading, one question and one
+  // sentence for the whole page. Our own documentation site runs that framework.
+  const articles = Array.from(container.querySelectorAll('article'))
+    .map((a) => ({ el: a as unknown as Element, n: contentTextLength(a as unknown as Element) }))
+    .sort((x, y) => y.n - x.n);
+
+  if (articles.length) {
+    const containerLen = contentTextLength(container);
+    const best = articles[0];
+    // An <article> replaces the container only when it DOMINATES it. A dominant article is the
+    // page; a small one is a component that happens to use the tag. Without a semantic
+    // container the comparison has no meaning - a raw <body> carries every sidebar and footer
+    // that is not marked up as chrome - so there we keep the historical article-first choice
+    // rather than guess.
+    if (!semantic) return best.el;
+    if (containerLen > 0 && best.n / containerLen >= ARTICLE_DOMINANCE) return best.el;
+  }
+  return container;
 };
 
 // Static tab discovery: aria-controls chains, role="tablist" siblings, and
