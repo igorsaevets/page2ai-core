@@ -107,9 +107,17 @@ const buildFrontmatter = (doc: Document, baseUrl: string): string[] => {
 // Tags that are page furniture rather than page content. Used ONLY to score candidate roots,
 // never to skip anything during rendering: once a root is chosen the walker still emits
 // everything inside it.
+//
+// FORM and DIALOG were here and were removed after being measured. A page whose content IS a
+// form - a permit application, a calculator, a docs page with a playground - scored as empty,
+// so a small unrelated card next to it became the highest-scoring <article> and won the root.
+// On the test case the whole application disappeared from the output and a "related permits"
+// teaser was returned in its place: the same failure this function exists to prevent, pointed
+// the other way. A form inside real chrome is still excluded, because its NAV/HEADER/FOOTER/
+// ASIDE ancestor is excluded and the walk never reaches it.
 const CHROME_TAGS = new Set([
   'NAV', 'HEADER', 'FOOTER', 'ASIDE', 'SCRIPT', 'STYLE', 'NOSCRIPT',
-  'TEMPLATE', 'SVG', 'CANVAS', 'FORM', 'DIALOG',
+  'TEMPLATE', 'SVG', 'CANVAS',
 ]);
 
 // Length of the text a reader would call content: chrome and hidden subtrees excluded.
@@ -148,6 +156,18 @@ const contentTextLength = (el: Element): number => {
 // case it was fitted to.
 const ARTICLE_DOMINANCE = 0.5;
 
+// Second, independent way for an <article> to prove it is the page: dwarfing every other
+// <article> on it. This exists because the container ratio alone has a blind spot - a real post
+// followed by a large "related posts" rail of teasers can fall under 0.5 and lose to <main>,
+// dragging fourteen teasers into the output. Measured on that shape: the post scored 6.2k
+// against a 14.2k container, so the ratio said "not dominant" about the one thing on the page
+// that was.
+//
+// A list of cards is a list because its members are COMPARABLE: Astro's five cards measured
+// 300/181/155/127/107, a 1.7x spread. A page with one real article and some teasers is not:
+// 6.2k against 0.5k is 12x. Three is comfortably inside that gap in both directions.
+const ARTICLE_DWARFS_SIBLINGS = 3;
+
 // linkedom can hand back a <body> with zero children while the content sits under
 // documentElement. Reproduced 2026-08-02 on nodejs.org/api/fs.html: body.childNodes.length is 0
 // and documentElement.textContent is 256,836 characters. Trusting doc.body there yields the
@@ -178,15 +198,21 @@ const pickContentRoot = (doc: Document): Element | null => {
     .sort((x, y) => y.n - x.n);
 
   if (articles.length) {
-    const containerLen = contentTextLength(container);
     const best = articles[0];
-    // An <article> replaces the container only when it DOMINATES it. A dominant article is the
-    // page; a small one is a component that happens to use the tag. Without a semantic
-    // container the comparison has no meaning - a raw <body> carries every sidebar and footer
-    // that is not marked up as chrome - so there we keep the historical article-first choice
-    // rather than guess.
+    // Without a semantic container the comparison has no meaning - a raw <body> carries every
+    // sidebar and footer that is not marked up as chrome - so there we keep the historical
+    // article-first choice rather than guess.
     if (!semantic) return best.el;
-    if (containerLen > 0 && best.n / containerLen >= ARTICLE_DOMINANCE) return best.el;
+
+    // An <article> replaces the container when it dominates the container, OR when it dwarfs
+    // every other <article> present. Either test alone has a blind spot the other covers:
+    // the ratio misses a real post buried under a related-posts rail, and the sibling test
+    // says nothing at all when there is only one <article> on the page.
+    const containerLen = contentTextLength(container);
+    const runnerUp = articles[1]?.n ?? 0;
+    const dominatesContainer = containerLen > 0 && best.n / containerLen >= ARTICLE_DOMINANCE;
+    const dwarfsSiblings = runnerUp > 0 && best.n / runnerUp >= ARTICLE_DWARFS_SIBLINGS;
+    if (dominatesContainer || dwarfsSiblings) return best.el;
   }
   return container;
 };

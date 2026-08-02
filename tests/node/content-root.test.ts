@@ -95,6 +95,40 @@ describe('pickContentRoot', () => {
     expect(out).not.toContain('no extractable body content');
   });
 
+  // The two cases below were not found by testing. They were predicted by an external reviewer
+  // given only the diff, then reproduced, and both were real. The second one lost the article
+  // completely - the same failure class the fix exists to prevent, pointed the other way.
+
+  it('keeps a real post that is buried under a large related-posts rail', () => {
+    // The post is ~6.2k against a ~14.2k <main>, so the container ratio alone calls it
+    // non-dominant and drags fourteen teasers into the output. It survives on the sibling
+    // test instead: 6.2k against a 0.5k teaser is far past 3x.
+    const rail = Array.from({ length: 14 }, (_, i) =>
+      `<article class="teaser"><h3>Teaser ${i}</h3><p>${'Teaser body text. '.repeat(30)}</p></article>`).join('');
+    const out = md(`<html><head><title>T</title></head><body><main>
+      <article class="post"><h1>Real Post</h1><p>${'The substance of the post. '.repeat(240)}</p></article>
+      <section class="related-posts">${rail}</section></main></body></html>`);
+    expect(out).toContain('Real Post');
+    expect(out).toContain('The substance of the post.');
+    expect(out).not.toContain('Teaser 7');
+  });
+
+  it('does not lose an article whose content is a form', () => {
+    // Scoring used to skip FORM as chrome, so this article scored near zero and a small
+    // unrelated card beside it became the highest-scoring <article> and took the root. The
+    // application text vanished entirely and the teaser was returned in its place.
+    const out = md(`<html><head><title>T</title></head><body><main>
+      <article id="application"><h1>Apply for permit</h1>
+        <form><label>Full name</label><label>Address</label>
+        <p>${'Instructions for the applicant. '.repeat(120)}</p></form></article>
+      <section><article class="related-card"><h3>Other permits</h3>
+        <p>${'Other permit info. '.repeat(60)}</p></article></section>
+    </main></body></html>`);
+    expect(out).toContain('Apply for permit');
+    expect(out).toContain('Instructions for the applicant.');
+    expect(out).not.toContain('Other permits');
+  });
+
   it('prefers the single <article> when there is no semantic container to compare against', () => {
     // With no <main> and no [role=main] the comparison has no meaning: a raw <body> carries every
     // sidebar that is not marked up as chrome. The historical article-first choice is kept there
