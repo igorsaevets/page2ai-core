@@ -17,6 +17,7 @@ import { LinkedomAdapter } from './linkedom-adapter.js';
 import { renderBasicMarkdown } from './basic-renderer.js';
 import { fetchProtected } from './fetch-protected.js';
 import { assertSafeUrl } from './ssrf-guard.js';
+import { CORE_VERSION } from '../shared/constants.js';
 import type { ProfileName } from '../shared/types.js';
 
 export interface HtmlToMarkdownOptions {
@@ -72,7 +73,7 @@ export const htmlToMarkdown = (
       `source: "${injectedBase}"`,
       `captured_at: "${new Date().toISOString()}"`,
       `extractor: "page2ai-core"`,
-      `extractor_version: "0.1.0"`,
+      `extractor_version: "${CORE_VERSION}"`,
       `error: "${errMsg.replace(/"/g, '\\"')}"`,
       '---',
       '',
@@ -111,7 +112,7 @@ const wrapMdWithFrontmatter = (
     `source: ${yq(url)}`,
     `captured_at: ${yq(new Date().toISOString())}`,
     `extractor: ${yq('page2ai-core')}`,
-    `extractor_version: ${yq('0.1.0')}`,
+    `extractor_version: ${yq(CORE_VERSION)}`,
     `extractor_source: ${yq(via)}`,
     '---',
     '',

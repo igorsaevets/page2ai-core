@@ -3,6 +3,12 @@
 
 import type { ExtractorConfig } from './types.js';
 
+// The ONE code copy of the version embedded in output frontmatter. package.json necessarily
+// carries the other copy; a release bumps both in the same commit and the publish workflow's
+// tag check enforces the package.json side. A third hardcoded copy drifted once (SERVER_VERSION
+// in @page2ai/mcp, caught T51) — never add another literal.
+export const CORE_VERSION = '0.1.5';
+
 // Indent constant: 3 spaces for CommonMark-compatible nested lists.
 export const INDENT = '   ';
 
