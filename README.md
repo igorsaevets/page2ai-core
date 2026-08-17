@@ -93,7 +93,6 @@ src/
 ├── shared/           # No DOM assumptions — works with any adapter
 │   ├── page-adapter.ts    # PageAdapter interface + defaults + nodeCssEscape
 │   ├── utils.ts           # pure helpers (absUrl, escapeMd, etc.)
-│   ├── md-postprocess.ts  # pure string transforms
 │   ├── types.ts           # all TypeScript interfaces
 │   ├── constants.ts       # DEFAULTS, BLOCK_TAGS, PII patterns
 │   └── profiles.ts        # profile presets
