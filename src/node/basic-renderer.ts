@@ -352,14 +352,28 @@ const discoverTabGroups = (root: Element): TabGroup[] => {
       (c) => c.getAttribute('role') === 'tabpanel',
     );
     if (siblingPanels.length < 2) return;
-    const panels = siblingPanels.map((p) => ({
-      label: p.getAttribute('aria-labelledby') ||
-             p.getAttribute('aria-label') ||
-             p.getAttribute('data-value') ||
-             p.id ||
-             'Panel',
-      el: p,
-    }));
+    const panels = siblingPanels.map((p) => {
+      // aria-labelledby is an IDREF list, not text: dereference it to the
+      // labelling element's text instead of emitting the raw id as a heading.
+      const labelledBy = p.getAttribute('aria-labelledby') || '';
+      const doc = p.ownerDocument;
+      const labelledText = labelledBy && doc
+        ? labelledBy
+            .split(/\s+/)
+            .map((id) => doc.getElementById(id)?.textContent || '')
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        : '';
+      return {
+        label: labelledText ||
+               p.getAttribute('aria-label') ||
+               p.getAttribute('data-value') ||
+               p.id ||
+               'Panel',
+        el: p,
+      };
+    });
     groups.push({ container: parent, panels });
     seenContainers.add(parent);
   });

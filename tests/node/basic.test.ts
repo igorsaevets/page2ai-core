@@ -56,8 +56,9 @@ describe('htmlToMarkdown — basic', () => {
       '<article><a href="/api">API</a></article>',
       { baseUrl: 'https://docs.example.com/guide', includeFrontmatter: false },
     );
-    expect(markdown).toContain('[API]');
-    // Note: link resolution is applied to images; for anchors the v0.1 basic
-    // renderer preserves the original href. v0.2 will resolve all.
+    // Anchors ARE resolved against baseUrl (measured on the shipped build; an
+    // earlier comment here claimed the opposite and documented a behavior the
+    // renderer never had).
+    expect(markdown).toContain('[API](https://docs.example.com/api)');
   });
 });

@@ -113,10 +113,16 @@ export const PROFILES: Record<ProfileName, ProfileSettings> = {
 };
 
 // Auto-detects docs/wordpress/marketing/dashboard from page characteristics.
+// In an environment with no DOM globals (Node), calling this without arguments
+// falls back to 'marketing' instead of throwing a ReferenceError on the bare
+// `document`/`location` reads the old default parameters performed.
 export const detectProfile = (
-  doc: Document = document,
-  loc: Location = location,
+  docParam?: Document,
+  locParam?: Location,
 ): ProfileName => {
+  const doc = docParam ?? (typeof document !== 'undefined' ? document : undefined);
+  const loc = locParam ?? (typeof location !== 'undefined' ? location : undefined);
+  if (!doc || !loc) return 'marketing';
   const hostname = loc.hostname.toLowerCase();
   const pathname = loc.pathname.toLowerCase();
   const generator = (

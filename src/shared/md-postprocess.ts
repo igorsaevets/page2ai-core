@@ -256,7 +256,10 @@ export const dedupeAdjacentLinks = (
   const lines = String(text || '').split('\n');
   const out: string[] = [];
   const fence = createFenceTracker();
-  const linkRe = /\[([^\]]*)\]\(([^)]+)\)/g;
+  // URL capture tolerates one level of balanced parens (Wikipedia-style
+  // "/Foo_(bar)"); a bare [^)]+ would cut the URL at the inner ')' and leak
+  // the tail into the output.
+  const linkRe = /\[([^\]]*)\]\(([^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g;
 
   const extractLinkSigs = (line: string): string[] => {
     const sigs: string[] = [];
@@ -297,7 +300,7 @@ export const dedupeAdjacentLinks = (
     // Also handle inline duplicates: [A](url) [A](url) on same line.
     const seen = new Set<string>();
     const cleaned = line
-      .replace(/\[([^\]]*)\]\(([^)]+)\)/g, (match, label: string, url: string) => {
+      .replace(/\[([^\]]*)\]\(([^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g, (match, label: string, url: string) => {
         const sig = label + '|' + url;
         if (seen.has(sig)) return '';
         seen.add(sig);
@@ -378,7 +381,7 @@ export const compactLinkLabels = (
       continue;
     }
     out.push(
-      line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label: string, url: string) => {
+      line.replace(/\[([^\]]+)\]\(([^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g, (match, label: string, url: string) => {
         if (label.length > max) return `[${label.slice(0, max)}…](${url})`;
         return match;
       }),
@@ -563,7 +566,7 @@ export const aggressiveCleanup = (
       continue;
     }
     const cleaned = line.replace(
-      /(\[)([^\]]*?)(\]\()([^)]+)(\))/g,
+      /(\[)([^\]]*?)(\]\()([^\s()]*(?:\([^\s()]*\)[^\s()]*)*)(\))/g,
       (match, _o: string, lt: string, _m: string, url: string) => {
         if (lt.length > maxLT || htmlP.test(lt)) {
           sc++;

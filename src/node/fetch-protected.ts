@@ -1,15 +1,17 @@
 // Hardened fetch for the Node MCP server:
-// - SSRF guard (assertSafeUrl blocks private ranges, metadata endpoints)
-// - AbortController timeout (default 15s)
+// - SSRF guard with DNS resolution (assertSafeUrlResolved) run on the initial
+//   URL AND on every redirect hop, before that hop is followed
+// - Redirects followed MANUALLY (redirect: 'manual', max 10 hops) so an
+//   internal target is rejected before the request is made, not after
+// - AbortController timeout (default 15s, covers the whole redirect chain)
 // - Response size cap (default 10MB) — abort if body exceeds
-// - Follows redirects and returns the FINAL URL for absUrl base resolution
 // - Strips UTF-8 BOM from response text
 // - Basic content-type guard: only text/html, text/markdown, text/plain accepted
 //
 // KNOWN LIMITATION (v0.1): no charset detection for non-UTF-8 pages (Windows-1251
 // docs will mojibake). Planned for v0.2 via `fetch-charset-detection`.
 
-import { assertSafeUrl, SsrfBlockedError } from './ssrf-guard.js';
+import { assertSafeUrlResolved, SsrfBlockedError } from './ssrf-guard.js';
 
 export interface FetchProtectedOptions {
   timeoutMs?: number;
@@ -30,6 +32,7 @@ const DEFAULT_UA = 'page2ai-core/0.1 (+https://github.com/igorsaevets/page2ai-co
 const DEFAULT_TIMEOUT = 15000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;  // 10 MB
 const DEFAULT_ACCEPT = /^(text\/html|text\/markdown|text\/plain|application\/xhtml\+xml)/i;
+const MAX_REDIRECTS = 10;
 
 export class FetchProtectionError extends Error {
   constructor(reason: string, public readonly url: string) {
@@ -44,8 +47,6 @@ export const fetchProtected = async (
   rawUrl: string,
   opts: FetchProtectedOptions = {},
 ): Promise<FetchProtectedResult> => {
-  assertSafeUrl(rawUrl);
-
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const ua = opts.userAgent ?? DEFAULT_UA;
@@ -55,29 +56,50 @@ export const fetchProtected = async (
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const resp = await fetch(rawUrl, {
-      signal: controller.signal,
-      headers: {
-        'user-agent': ua,
-        accept: 'text/html,text/markdown,text/plain,application/xhtml+xml,*/*;q=0.5',
-      },
-      redirect: 'follow',
-    });
+    // Follow redirects by hand: validate every hop (string checks + DNS)
+    // BEFORE connecting to it. With redirect:'follow' the runtime would have
+    // already delivered the request to an internal host by the time any
+    // post-hoc check could run.
+    let currentUrl = rawUrl;
+    let resp: Response;
+    let hops = 0;
+    for (;;) {
+      await assertSafeUrlResolved(currentUrl);
+      resp = await fetch(currentUrl, {
+        signal: controller.signal,
+        headers: {
+          'user-agent': ua,
+          accept: 'text/html,text/markdown,text/plain,application/xhtml+xml,*/*;q=0.5',
+        },
+        redirect: 'manual',
+      });
 
-    // After redirects — validate FINAL URL is still SSRF-safe (fetch may have
-    // followed a redirect INTO a private range).
-    const finalUrl = resp.url || rawUrl;
-    if (finalUrl !== rawUrl) {
-      try {
-        assertSafeUrl(finalUrl);
-      } catch (e) {
-        throw new FetchProtectionError(
-          `redirect landed on SSRF-blocked URL: ${(e as SsrfBlockedError).message}`,
-          rawUrl,
-        );
+      if (resp.status >= 300 && resp.status < 400) {
+        const location = resp.headers.get('location');
+        if (!location) {
+          throw new FetchProtectionError(
+            `HTTP ${resp.status} redirect without a Location header`,
+            rawUrl,
+          );
+        }
+        try { await resp.body?.cancel(); } catch { /* best effort */ }
+        hops++;
+        if (hops > MAX_REDIRECTS) {
+          throw new FetchProtectionError(`more than ${MAX_REDIRECTS} redirects`, rawUrl);
+        }
+        let nextUrl: string;
+        try {
+          nextUrl = new URL(location, currentUrl).toString();
+        } catch {
+          throw new FetchProtectionError(`unparseable redirect Location "${location}"`, rawUrl);
+        }
+        currentUrl = nextUrl;
+        continue;
       }
+      break;
     }
 
+    const finalUrl = currentUrl;
     const contentType = resp.headers.get('content-type') || '';
     if (!resp.ok) {
       throw new FetchProtectionError(
@@ -119,6 +141,12 @@ export const fetchProtected = async (
     const text = stripBom(buf.toString('utf-8'));
 
     return { text, finalUrl, contentType, bytesRead, statusCode: resp.status };
+  } catch (e) {
+    // Keep the SSRF reason visible to callers when a redirect hop was blocked.
+    if (e instanceof SsrfBlockedError) {
+      throw new FetchProtectionError(`blocked by SSRF guard: ${e.message}`, rawUrl);
+    }
+    throw e;
   } finally {
     clearTimeout(timer);
   }
