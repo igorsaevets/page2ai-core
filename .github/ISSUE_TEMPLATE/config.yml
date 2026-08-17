@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://igorsaevets.github.io/page2ai-docs/
+    about: Usage, FAQ and comparison with other tools
+  - name: Report a security issue (private)
+    url: https://github.com/igorsaevets/page2ai-core/security/advisories/new
+    about: Never report vulnerabilities in a public issue
