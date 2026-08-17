@@ -1,0 +1,30 @@
+name: Extraction problem
+description: A URL or HTML input produces wrong or incomplete Markdown
+labels: [bug]
+body:
+  - type: input
+    id: url
+    attributes:
+      label: Page URL
+      description: Or write "HTML attached" and paste a minimal snippet below.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and adapter
+      placeholder: "@page2ai/core 0.1.5, node adapter"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Markdown (the relevant part)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
