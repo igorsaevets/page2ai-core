@@ -32,6 +32,14 @@ interface TabGroup {
   panels: Array<{ label: string; el: Element }>;
 }
 
+// #9: the synthetic title heading duplicates the page's own <h1> on most well-formed
+// pages (h1 == title). While `pendingTitle` is set, the first heading the walk meets is
+// skipped if it normalizes to the same string; the window closes at that first heading
+// either way, so an identical heading later in the page is content and always renders.
+interface TitleDedupe {
+  pendingTitle: string;
+}
+
 export const renderBasicMarkdown = (
   doc: Document,
   adapter: PageAdapter,
@@ -58,7 +66,8 @@ export const renderBasicMarkdown = (
 
     const lines: string[] = [];
     void adapter;
-    walkWithTabs(root, lines, 0, opts, tabGroups, capturedPanelEls);
+    const dedupe: TitleDedupe = { pendingTitle: title ? squeezeText(title) : '' };
+    walkWithTabs(root, lines, 0, opts, tabGroups, capturedPanelEls, dedupe);
     parts.push(...lines);
   } else {
     parts.push('', '<!-- AI: page has no extractable body content -->', '');
@@ -387,9 +396,10 @@ const walkWithTabs = (
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
 ): void => {
   for (const child of el.children) {
-    renderNodeWithTabs(child, out, depth, opts, tabGroups, capturedPanelEls);
+    renderNodeWithTabs(child, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
   }
 };
 
@@ -400,6 +410,7 @@ const renderNodeWithTabs = (
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
 ): void => {
   // If THIS element is a captured tab panel, skip — it will be rendered as
   // part of its tab group section, not inline.
@@ -409,11 +420,11 @@ const renderNodeWithTabs = (
   if (group) {
     for (const panel of group.panels) {
       out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
-      walkWithTabs(panel.el, out, depth, opts, tabGroups, capturedPanelEls);
+      walkWithTabs(panel.el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
     }
     return;
   }
-  renderNode(el, out, depth, opts, tabGroups, capturedPanelEls);
+  renderNode(el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
 const renderNode = (
@@ -423,6 +434,7 @@ const renderNode = (
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
 ): void => {
   const tag = el.tagName;
   if (SKIP_TAGS.has(tag)) return;
@@ -433,7 +445,16 @@ const renderNode = (
   if (/^H[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1));
     const text = renderInline(el, opts).trim();
-    if (text) out.push('', `${'#'.repeat(level)} ${text}`, '');
+    if (text) {
+      if (dedupe.pendingTitle) {
+        // Match on textContent, not the rendered markdown: escaping and link syntax
+        // must not defeat the comparison, and the synthetic heading is plain text.
+        const isDup = squeezeText(cleanInline(el.textContent || '')) === dedupe.pendingTitle;
+        dedupe.pendingTitle = '';
+        if (isDup) return;
+      }
+      out.push('', `${'#'.repeat(level)} ${text}`, '');
+    }
     return;
   }
 
@@ -458,7 +479,7 @@ const renderNode = (
 
   if (tag === 'BLOCKQUOTE') {
     const inner: string[] = [];
-    walkWithTabs(el, inner, depth, opts, tabGroups, capturedPanelEls);
+    walkWithTabs(el, inner, depth, opts, tabGroups, capturedPanelEls, dedupe);
     const text = inner.join('\n').trim();
     if (text) {
       out.push('');
@@ -473,7 +494,7 @@ const renderNode = (
     let i = 1;
     for (const li of items) {
       const marker = tag === 'OL' ? `${i}.` : '-';
-      renderListItem(li, marker, out, depth, pfx, opts, tabGroups, capturedPanelEls);
+      renderListItem(li, marker, out, depth, pfx, opts, tabGroups, capturedPanelEls, dedupe);
       i++;
     }
     return;
@@ -495,7 +516,7 @@ const renderNode = (
   if (tag === 'HR') { out.push('', '---', ''); return; }
   if (tag === 'BR') { out.push(''); return; }
 
-  walkWithTabs(el, out, depth, opts, tabGroups, capturedPanelEls);
+  walkWithTabs(el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
 // Block tags that, as direct children of an <li>, render below the bullet instead of being
@@ -523,6 +544,7 @@ const renderListItem = (
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
 ): void => {
   let emittedMarker = false;
   let run: Node[] = [];
@@ -560,7 +582,7 @@ const renderListItem = (
           out.push(`${pfx}${marker}`);
           emittedMarker = true;
         }
-        renderNodeWithTabs(c, out, depth + 1, opts, tabGroups, capturedPanelEls);
+        renderNodeWithTabs(c, out, depth + 1, opts, tabGroups, capturedPanelEls, dedupe);
         continue;
       }
     }

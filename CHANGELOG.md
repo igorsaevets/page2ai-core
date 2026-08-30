@@ -2,6 +2,44 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.1.8 - 2026-08-30
+
+### Fixed
+
+- **Duplicate H1 when the page's own `<h1>` equals the document title** (#9).
+  The renderer emits a title-derived heading, then walked the DOM and rendered
+  the page's identical `<h1>` again — the most common page shape there is.
+  The first heading the walk meets is now skipped when it normalizes to the
+  same string as the title (case, punctuation and anchor-link glyphs ignored);
+  the dedupe window closes at that first heading, so an identical heading
+  later in the page is treated as content and always renders. Matching runs
+  against the suffix-stripped title, so `<title>Page - Site</title>` pages
+  dedupe correctly too.
+
+  Benchmark A/B over the 14-page v2 corpus (published 0.1.7 vs this fix, same
+  cached bytes, all six tools re-run): 11 pages each lost exactly the one
+  duplicate heading line and nothing else; every recall / leak / f-score
+  metric unchanged to 4 decimals; the other five tools' outputs byte-identical
+  between arms. Only `bytes_out` (smaller) and `compression` in the 4th
+  decimal moved, on exactly the 11 affected pages.
+
+## 0.1.7 - 2026-08-17
+
+Packaging-only release; extraction output is byte-identical to 0.1.6.
+(This entry was added retroactively in 0.1.8 — the 0.1.7 release shipped
+without a changelog section.)
+
+### Removed
+
+- `src/shared/md-postprocess.ts` and its test: fixed in 0.1.6 but never wired
+  into any product path (not exported, not imported). Panel verdict was
+  unanimous — strip or wire. The extension keeps its own, used copy.
+
+### Changed
+
+- CODE_OF_CONDUCT enforcement contact routed through the GitHub handle
+  instead of a personal email address.
+
 ## 0.1.6 - 2026-08-17
 
 Security and correctness release driven by a full code audit. Extraction output
