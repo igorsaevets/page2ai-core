@@ -6,8 +6,10 @@ import type { ExtractorConfig } from './types.js';
 // The ONE code copy of the version embedded in output frontmatter. package.json necessarily
 // carries the other copy; a release bumps both in the same commit and the publish workflow's
 // tag check enforces the package.json side. A third hardcoded copy drifted once (SERVER_VERSION
-// in @page2ai/mcp, caught T51) — never add another literal.
-export const CORE_VERSION = '0.1.8';
+// in @page2ai/mcp, caught T51) — never add another literal. This copy itself drifted at 0.1.9
+// (frontmatter said 0.1.8 in live ChatGPT output); tests/shared/version-sync.test.ts now fails
+// the suite whenever the two copies disagree.
+export const CORE_VERSION = '0.1.10';
 
 // Indent constant: 3 spaces for CommonMark-compatible nested lists.
 export const INDENT = '   ';

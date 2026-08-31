@@ -2,6 +2,16 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.1.10 - 2026-08-30
+
+### Fixed
+
+- **Frontmatter `extractor_version` said 0.1.8 on the 0.1.9 release.**
+  `CORE_VERSION` in `src/shared/constants.ts` is a hand-bumped literal and the
+  0.1.9 release bumped only `package.json` — seen live in ChatGPT connector
+  output. Synced, and a new `version-sync` test fails the suite whenever the
+  constant and `package.json` disagree, so this class of drift cannot ship
+  again.
 ## 0.1.9 - 2026-08-30
 
 ### Fixed
