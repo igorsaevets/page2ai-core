@@ -631,6 +631,9 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Set<Ele
       continue;
     }
     if (tag === 'IMG') {
+      // Same includeImages contract as the block-level IMG branch: an image
+      // wrapped in a link, list item or table cell arrives here instead.
+      if (!opts.includeImages) continue;
       const alt = cleanInline(c.getAttribute('alt') || '');
       const src = absUrl(c.getAttribute('src') || '', opts.baseUrl);
       if (src) parts.push(`![${escapeMd(alt || 'image')}](${src})`);

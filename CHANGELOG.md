@@ -2,6 +2,20 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.1.9 - 2026-08-30
+
+### Fixed
+
+- **`includeImages: false` leaked images in inline positions.** The block-level
+  `<img>` branch honored the option, but the inline renderer — an image inside
+  a list item, table cell or link — emitted `![…](…)` unconditionally, so
+  pages whose images sit in linked or list contexts (MDN diagrams, Wikipedia
+  portal bars) kept some or all of them. Found by running the hosted-endpoint
+  submission test cases against production: on one MDN page the option changed
+  nothing (5 images in both arms, byte-identical output). Both branches now
+  share the same `includeImages` contract; regression test covers both
+  positions.
+
 ## 0.1.8 - 2026-08-30
 
 ### Fixed

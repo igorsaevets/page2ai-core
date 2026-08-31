@@ -61,4 +61,27 @@ describe('htmlToMarkdown — basic', () => {
     // renderer never had).
     expect(markdown).toContain('[API](https://docs.example.com/api)');
   });
+
+  it('includeImages:false strips images in BOTH positions — block and inline', () => {
+    // Regression: the inline renderer (image wrapped in a link / list item /
+    // table cell) ignored includeImages, so linked images leaked through while
+    // bare <img> was stripped. Found live on MDN diagrams and Wikipedia's
+    // portal bar, 2026-08-30.
+    const html =
+      '<article><p>Intro</p><img src="/block.png" alt="block">' +
+      '<ul><li>See <img src="/inline.png" alt="inline"> here</li></ul></article>';
+    const off = htmlToMarkdown(html, {
+      baseUrl: 'https://example.com/',
+      includeFrontmatter: false,
+      includeImages: false,
+    }).markdown;
+    expect(off).not.toContain('![');
+    const on = htmlToMarkdown(html, {
+      baseUrl: 'https://example.com/',
+      includeFrontmatter: false,
+      includeImages: true,
+    }).markdown;
+    expect(on).toContain('![block](https://example.com/block.png)');
+    expect(on).toContain('![inline](https://example.com/inline.png)');
+  });
 });
