@@ -1,6 +1,12 @@
 # @page2ai/core
 
-Extract clean Markdown from any web page HTML. Works in Node.js (via linkedom) and in browsers. Powers the [Page2AI extension](https://github.com/igorsaevets/page2ai-extension) and the [`@page2ai/mcp` server](https://github.com/igorsaevets/page2ai-mcp).
+> Webpage-to-Markdown extraction engine for LLM context (ChatGPT, Claude, Gemini).
+> Same engine that powers the [Page2AI Chrome & Firefox extensions](https://github.com/igorsaevets/page2ai-extension)
+> and the [`@page2ai/mcp` server](https://github.com/igorsaevets/page2ai-mcp).
+> Preserves code blocks with language hints, tables, and reading structure.
+> Zero telemetry, MIT-licensed.
+
+Works in Node.js (via linkedom) and in browsers.
 
 - **Node.js**: `htmlToMarkdown(html, opts)` or `fetchAndConvert(url, opts)` — zero external API calls, uses linkedom for parsing
 - **Browser**: exports `BrowserAdapter` and the `PageAdapter` interface; the full extract pipeline lives in the extension repo (planned for v0.2 migration)
