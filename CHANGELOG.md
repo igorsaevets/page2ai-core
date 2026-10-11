@@ -2,6 +2,23 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.1.11 - 2026-10-11
+
+### Changed
+
+- **Releases are published through npm trusted publishing (OIDC).** The
+  publish workflow no longer reads a stored npm token: npm trusts
+  `.github/workflows/publish.yml` of this repository, exchanges the job's
+  GitHub OIDC token for a short-lived publish token, and records GitHub
+  Actions as the publisher. A post-publish step fails the release when the
+  registry shows any other publisher. Provenance attestations continue as
+  before.
+- README header leads with the LLM context use case (ChatGPT, Claude,
+  Gemini) and names the extraction features.
+
+Extraction is unchanged; only the `extractor_version` reported in
+frontmatter moves to 0.1.11.
+
 ## 0.1.10 - 2026-08-30
 
 ### Fixed
@@ -12,6 +29,7 @@ All notable changes to `@page2ai/core`.
   output. Synced, and a new `version-sync` test fails the suite whenever the
   constant and `package.json` disagree, so this class of drift cannot ship
   again.
+
 ## 0.1.9 - 2026-08-30
 
 ### Fixed
