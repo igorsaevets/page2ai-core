@@ -2,10 +2,22 @@ name: Publish to npm (with provenance)
 
 # Tag-triggered so a publish is always tied to a specific commit and a specific
 # release, never to whatever happened to be on main.
+#
+# Authentication is npm trusted publishing (OIDC): the registry trusts this
+# workflow file of this repository for @page2ai/core, so no npm token is stored
+# anywhere. The trust lives on npmjs.com (`npm trust github`), and a NEW trust
+# configuration expires unless a publish validates it within 2 days
+# (docs.npmjs.com/trusted-publishers). Dispatching this workflow with
+# oidc_probe=true checks that the registry accepts it and publishes nothing.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      oidc_probe:
+        description: 'Only check that npm trusted publishing accepts this workflow (publishes nothing)'
+        type: boolean
+        default: false
 
 # GitHub's implicit shell for `run:` is `bash -e {0}` -- `-e` is on, `pipefail` is
 # NOT. So `X=$(cmd | head -n 1)` succeeds with X empty when `cmd` fails, because
@@ -18,15 +30,16 @@ defaults:
 jobs:
   publish:
     name: Build, test and publish
+    if: ${{ !inputs.oidc_probe }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     permissions:
       contents: read
-      # Required for provenance: npm exchanges this OIDC token with Sigstore for
-      # a short-lived signing certificate. Without id-token: write the publish
-      # still succeeds but silently ships WITHOUT an attestation, which is the
-      # failure mode worth knowing about — it does not error, it just omits.
+      # Trusted publishing: npm exchanges this job's OIDC token for a
+      # short-lived publish token, and Sigstore signs the provenance
+      # attestation with the same identity. Without it the publish fails with
+      # ENEEDAUTH, because there is no stored token to fall back on.
       id-token: write
 
     steps:
@@ -37,10 +50,23 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
-          # registry-url is what writes the .npmrc that NODE_AUTH_TOKEN feeds.
-          # Omitting it is the usual cause of a 401 on publish.
+          # No dependency cache in a release build, as npm's trusted publishing
+          # guide says: whatever is restored into this job runs with the right
+          # to publish.
+          package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Check that npm supports trusted publishing
+        # npm older than 11.5.1 never attempts the OIDC exchange and then fails
+        # with a misleading ENEEDAUTH. Node 24 bundles a new enough npm today;
+        # this turns a future downgrade into a clear error.
+        run: |
+          V="$(npm --version)"
+          if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$V"; then
+            echo "::error::npm $V cannot use trusted publishing; it needs npm >= 11.5.1"
+            exit 1
+          fi
+          echo "npm $V supports trusted publishing"
 
       - name: Install dependencies
         run: npm ci
@@ -67,9 +93,30 @@ jobs:
           echo "publishing $PKG"
 
       - name: Publish
+        # Authenticates through trusted publishing. Provenance is automatic
+        # there; --provenance only makes it explicit.
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify the release went through trusted publishing
+        # The registry records GitHub Actions (npm-oidc-no-reply@github.com) as
+        # the publisher of a version published over OIDC, and the account owner
+        # for a token publish. This keeps "no stored token" checked on every
+        # release instead of assumed.
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          U=""
+          # With --json, a version the registry cannot see yet prints an E404
+          # JSON body and exits 1, so success is the exit code, not the output.
+          for _ in 1 2 3 4 5 6; do
+            if U="$(npm view "@page2ai/core@$V" _npmUser --json 2>/dev/null)"; then break; fi
+            U=""
+            sleep 10
+          done
+          case "$U" in
+            *npm-oidc-no-reply@github.com*) echo "@page2ai/core@$V was published by trusted publishing" ;;
+            "") echo "::warning::@page2ai/core@$V is not visible on the registry yet; check its publisher later" ;;
+            *) echo "::error::@page2ai/core@$V was not published by trusted publishing: $U"; exit 1 ;;
+          esac
 
       - name: Verify the attestation is live
         # npm audit signatures checks the published tarball against the registry's
@@ -78,3 +125,41 @@ jobs:
         run: |
           sleep 20
           npm audit signatures || echo "attestation not visible yet; check the package page"
+
+  oidc-probe:
+    name: Check trusted publishing (publishes nothing)
+    if: ${{ inputs.oidc_probe }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ask the registry for a publish token (dry run)
+        # npm publish runs its OIDC exchange before it looks at --dry-run, so a
+        # dry run proves the registry accepts this workflow for the package and
+        # uploads nothing; npm never prints the short-lived token it gets back.
+        # npm still exits 1 when this version is already published, so the
+        # verdict comes from npm's own log line, not from its exit code.
+        run: |
+          LOG="$RUNNER_TEMP/oidc-probe.log"
+          npm publish --dry-run --ignore-scripts --loglevel verbose >"$LOG" 2>&1 || true
+          if grep -q 'oidc Successfully retrieved and set token' "$LOG"; then
+            echo "@page2ai/core: trusted publishing accepts this workflow"
+          else
+            WHY="$(grep -m1 'verbose oidc' "$LOG" || echo 'npm logged no OIDC step')"
+            echo "::error::@page2ai/core: trusted publishing does not accept this workflow: $WHY"
+            exit 1
+          fi
