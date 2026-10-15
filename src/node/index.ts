@@ -43,16 +43,32 @@ export interface ConversionResult {
   source: 'html-parse' | 'md-suffix' | 'content-negotiation' | 'llms-txt';
 }
 
+// linkedom builds the document of a FRAGMENT around its first element: `<style>..</style><div>..`
+// gets <style> as documentElement, an empty synthetic <body>, and every later top-level node as
+// a sibling outside both, so the walk found nothing and returned "" with no error (P2A-003: an
+// HTMX-style partial; `<h1>T</h1><p>x</p>` loses even the heading). Plain text or "" gets no
+// documentElement at all and linkedom's own `body` getter throws. Any parse whose root is not
+// <html> is redone inside an html/body shell.
+const parseDocument = (html: string): Document => {
+  const first = parseHTML(html).document as unknown as Document;
+  if (first.documentElement?.tagName === 'HTML') return first;
+  const inner = html.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
+  const shell = /<(?:head|body)[\s>]/i.test(inner)
+    ? `<!DOCTYPE html><html>${inner}</html>`
+    : `<!DOCTYPE html><html><head></head><body>${inner}</body></html>`;
+  return parseHTML(shell).document as unknown as Document;
+};
+
 export const htmlToMarkdown = (
   html: string,
   opts: HtmlToMarkdownOptions = {},
 ): ConversionResult => {
   const injectedBase = opts.baseUrl ?? 'about:blank';
   try {
-    const { document } = parseHTML(html);
-    const adapter = new LinkedomAdapter(document as unknown as Document, injectedBase);
+    const document = parseDocument(html);
+    const adapter = new LinkedomAdapter(document, injectedBase);
     const title = (document.querySelector('title')?.textContent || '').trim();
-    const markdown = renderBasicMarkdown(document as unknown as Document, adapter, {
+    const markdown = renderBasicMarkdown(document, adapter, {
       baseUrl: adapter.baseUrl(),
       includeFrontmatter: opts.includeFrontmatter ?? true,
       includeImages: opts.includeImages ?? true,
@@ -202,5 +218,8 @@ export const fetchAndConvert = async (
 // Re-export public types + errors for consumers (MCP server catches these).
 export type { ProfileName } from '../shared/types.js';
 export { LinkedomAdapter } from './linkedom-adapter.js';
-export { SsrfBlockedError, assertSafeUrl } from './ssrf-guard.js';
+// assertSafeUrlResolved is the exact check fetchAndConvert runs on the URL and on every redirect
+// hop, so a caller can learn before fetching whether a URL will be refused; findIpBlockReason is
+// its address rule. Both sat in the published .d.ts without being importable (P2A-009).
+export { SsrfBlockedError, assertSafeUrl, assertSafeUrlResolved, findIpBlockReason } from './ssrf-guard.js';
 export { FetchProtectionError, fetchProtected } from './fetch-protected.js';

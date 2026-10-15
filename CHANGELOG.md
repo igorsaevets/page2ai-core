@@ -2,6 +2,53 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+Output changes on most pages; the extension, the MCP server and the benchmark numbers move with it.
+On the 14-page benchmark corpus no word, code fence, table row, heading or list item of the 0.1.11
+output is lost, `f_score` stays 0.916, and 9 pages gain text that 0.1.11 dropped.
+
+### Fixed
+
+- **Text outside a recognised block tag is no longer dropped.** The Node renderer walked element
+  children only, so text sitting directly in a `<div>`, `<section>`, `<span>` or `<blockquote>`,
+  beside a `<br>`, or in a `<dt>`, `<figcaption>` or `<summary>` vanished while every heading and
+  table survived: on a server-rendered admin page 25 of 26 key/value labels and 10 of 12 metric
+  tiles were missing. Such text now renders as its own paragraph. A row of links or images with no
+  text between them still renders one per line, as before.
+- **`<dl>` renders as definition-list Markdown** (`**term**`, then `: definition`), the format the
+  extension uses. A `<dd>` that holds blocks (paragraphs, code, tables, as in every Sphinx API
+  entry) is walked, not flattened. A `<dl>` with no `<dt>`/`<dd>` is treated as a plain container.
+- **Entities inside words no longer split them.** linkedom yields `account&#39;s` as three text
+  nodes and the inline renderer joined parts with a space, giving `account ' s`; the same broke
+  `AT&amp;T`, `caf&eacute;` and every quote entity. Inline parts now keep the source's whitespace,
+  which also removes the space before punctuation after a link (`[docs](url) .`). Emphasis moves
+  its edge whitespace outside the delimiters.
+- **HTML fragments convert.** Input without `<html>` (an HTMX partial, `<h1>T</h1><p>x</p>`, a
+  snippet starting with `<style>`) came back as an empty string, and plain text or `""` came back
+  as "extraction failed" with a linkedom TypeError. Such input is now parsed inside an html/body
+  shell.
+- An empty extraction now says `<!-- AI: page has no extractable body content -->` instead of
+  returning nothing.
+
+### Changed
+
+- `<select>`, `<datalist>`, `<textarea>`, `<iframe>`, `<object>`, `<embed>`, `<audio>` and
+  `<video>` are skipped: option lists and "your browser does not support" fallbacks are not page
+  text. Elements that render empty no longer fall back to their raw `textContent` (except a link's
+  name), which had let script, style and SVG title text into paragraphs.
+
+### Added
+
+- `assertSafeUrlResolved` and `findIpBlockReason` are exported: the exact check `fetchAndConvert`
+  runs on a URL and on each redirect hop, so a caller can learn before fetching whether a URL will
+  be refused. Both were already in the published type declarations without being importable.
+
+### Docs
+
+- README: `profile` is accepted but ignored by the Node build in this version; the fetch's blocked
+  address ranges are listed, CGNAT `100.64.0.0/10` (Tailscale) included.
+
 ## 0.1.11 - 2026-10-11
 
 ### Changed

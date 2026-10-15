@@ -45,13 +45,13 @@ console.log(result.markdown);
 
 Converts an HTML string to Markdown. Synchronous.
 
-- `html` (string) — the HTML to parse
+- `html` (string) — the HTML to parse: a whole document or a fragment (an HTMX partial, a template snippet, plain text)
 - `opts.baseUrl` (string) — URL used to resolve relative links (default: `'about:blank'`)
-- `opts.profile` (string) — extraction profile: `'auto' | 'docs' | 'marketing' | 'research' | 'dashboard' | 'wordpress-marketing'` (default: `'auto'`, v0.2)
+- `opts.profile` (string) — accepted, but **ignored by the Node build in this version**: `'dashboard'`, `'marketing'` and the rest produce the same output here. The profiles switch the browser extension's live-page pipeline (clicking tabs, waiting for lazy content), which the Node renderer does not run
 - `opts.includeFrontmatter` (boolean) — emit YAML frontmatter block (default: `true`)
 - `opts.includeImages` (boolean) — emit image links (default: `true`)
 
-Returns `{ markdown, title, baseUrl, charCount, extractedAt }`.
+Returns `{ markdown, title, baseUrl, charCount, extractedAt }`. When nothing can be extracted the Markdown says so with `<!-- AI: page has no extractable body content -->` instead of coming back empty.
 
 ### `fetchAndConvert(url, opts?)`
 
@@ -64,11 +64,13 @@ Fetches a URL and converts it to Markdown. Async.
 
 Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden.
 
+The fetch refuses anything that is not public, on the URL and on every redirect hop, after DNS resolution: `localhost`, loopback `127.0.0.0/8` and `::1`, `0.0.0.0/8`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16` (cloud metadata) and `fe80::`, CGNAT `100.64.0.0/10` (this includes Tailscale addresses), IPv6 unique-local `fc00::/7`, IPv4-mapped IPv6, and `metadata.google.internal`. So a page on your own intranet or tailnet cannot be fetched this way: fetch the HTML yourself and pass it to `htmlToMarkdown`. `assertSafeUrlResolved(url)` runs the same check without fetching, and `findIpBlockReason(address)` applies its address rule; both are exported.
+
 ## What it does
 
 - Parses HTML with [linkedom](https://github.com/WebReflection/linkedom) (fast, browser-DOM-fidelity, no layout engine)
 - Picks a content root (`main article` > `article` > `main` > `[role="main"]` > `body`)
-- Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`), blockquotes, inline formatting (bold, italic, code)
+- Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`), blockquotes, definition lists (`**term**` then `: definition`), inline formatting (bold, italic, code). Text sitting directly in a `<div>`, `<section>` or `<span>` is kept as its own paragraph, so dashboards and admin pages built from bare `<div>`s convert too
 - Extracts metadata into YAML frontmatter: `title`, `source`, `captured_at`, `language`, `description`, `canonical`, `og_title`, `og_description`, `author`, `published`, `extractor`, `extractor_version`
 
 ## What it does NOT do (v0.1)

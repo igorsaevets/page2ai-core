@@ -12,8 +12,30 @@ import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import { absUrl, chooseCodeFence, cleanInline, escapeMd, escapeMdTableCell } from '../shared/utils.js';
 
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS']);
+// HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
+// option lists and "your browser does not support" fallbacks, never page text; they used to stay
+// out only because the walk dropped all bare text (P2A-001), and must not arrive with the fix.
+const SKIP_TAGS = new Set([
+  'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'HEAD', 'TITLE',
+  'SELECT', 'DATALIST', 'TEXTAREA', 'IFRAME', 'OBJECT', 'EMBED', 'AUDIO', 'VIDEO',
+]);
 const INLINE_TAGS = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'CODE', 'SPAN', 'SMALL', 'MARK', 'U', 'S', 'DEL', 'INS', 'SUB', 'SUP', 'ABBR', 'CITE', 'Q', 'DFN', 'KBD', 'SAMP', 'VAR', 'TIME']);
+// Phrasing-level tags. Sitting directly in a container (`<div><span>Plan</span> starter</div>`)
+// they join the text around them into one paragraph instead of being walked as containers.
+const PHRASING_TAGS = new Set([
+  ...INLINE_TAGS, 'IMG', 'BR', 'WBR', 'BUTTON', 'LABEL', 'OUTPUT', 'DATA', 'BDI', 'BDO', 'FONT',
+  'BIG', 'TT', 'STRIKE', 'ACRONYM', 'NOBR', 'RUBY', 'RT', 'RP', 'METER', 'PROGRESS', 'INPUT',
+]);
+// A run made of nothing but these renders one element per line, as it did before runs existed.
+const RUN_ATOMS = new Set(['A', 'IMG', 'BR']);
+// Block-level tags met in INLINE position (a card <div> inside a link, a styling <div> folded into
+// an <li>): the browser starts a new line for them, so their text is spaced from its neighbours.
+const INLINE_BLOCK_GAP = new Set([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIALOG', 'DIV', 'DL', 'DT',
+  'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TBODY',
+  'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+]);
 const KNOWN_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'shellsession', 'powershell', 'ps1', 'bat', 'cmd', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'tsx', 'jsx', 'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'html', 'xml', 'css', 'scss', 'less', 'sass', 'sql', 'graphql', 'go', 'rust', 'java', 'kotlin', 'swift', 'c', 'cpp', 'csharp', 'php', 'ruby', 'r', 'lua', 'perl', 'dart', 'scala', 'elixir', 'haskell', 'markdown', 'md', 'mdx', 'mermaid', 'dockerfile', 'docker', 'nginx', 'diff', 'http', 'proto', 'tex', 'latex', 'vue', 'svelte', 'astro', 'plaintext', 'text', 'txt']);
 
 const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
@@ -68,7 +90,10 @@ export const renderBasicMarkdown = (
     void adapter;
     const dedupe: TitleDedupe = { pendingTitle: title ? squeezeText(title) : '' };
     walkWithTabs(root, lines, 0, opts, tabGroups, capturedPanelEls, dedupe);
-    parts.push(...lines);
+    // An empty walk is said out loud: a bare "" or a lone title reads as "the page is empty"
+    // when the cause is client-side rendering or markup the walk did not understand (P2A-003).
+    if (lines.some((l) => l.trim())) parts.push(...lines);
+    else parts.push('', '<!-- AI: page has no extractable body content -->', '');
   } else {
     parts.push('', '<!-- AI: page has no extractable body content -->', '');
   }
@@ -398,9 +423,50 @@ const walkWithTabs = (
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
 ): void => {
-  for (const child of el.children) {
-    renderNodeWithTabs(child, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+  // Child NODES, not element children. Text and phrasing elements sitting directly in a container
+  // collect into a run that renders as one paragraph, flushed before each block child. The walk
+  // used to iterate `el.children`, so text outside a recognised block tag vanished without a
+  // trace: `<div>Hello</div>`, a metric tile's label and value, text beside a `<br>`, a section's
+  // own sentence (P2A-001: on a server-rendered admin page 25 of 26 key/value labels and 10 of 12
+  // tiles were lost while every heading and table survived, so the output looked complete).
+  let run: Node[] = [];
+  const flush = (): void => {
+    if (!run.length) return;
+    const nodes = run;
+    run = [];
+    const hasText = nodes.some((n) => n.nodeType === 3 && /\S/.test(n.textContent || ''));
+    // Links and images with no text between them (a nav row, an icon strip) keep the old
+    // one-per-line rendering, so a page without stray text renders exactly as before.
+    if (!hasText && nodes.every((n) => n.nodeType !== 1 || RUN_ATOMS.has((n as Element).tagName))) {
+      for (const n of nodes) {
+        if (n.nodeType === 1) renderNodeWithTabs(n as Element, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+      }
+      return;
+    }
+    const text = renderInlineNodes(nodes, opts).trim();
+    if (text) out.push('', text, '');
+  };
+  for (const node of el.childNodes) {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      run.push(node);
+      continue;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const c = node as Element;
+    // Skipped where they stand, without ending the run: renderNode would drop them anyway.
+    if (SKIP_TAGS.has(c.tagName)) continue;
+    if (PHRASING_TAGS.has(c.tagName) && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
+      if (c.getAttribute('aria-hidden') === 'true') continue;
+      // A link wrapping a whole card (<a><div><h3>..</h3><p>..</p></div></a>) stays a block.
+      if (!hasBlockContent(c)) {
+        run.push(c);
+        continue;
+      }
+    }
+    flush();
+    renderNodeWithTabs(c, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
   }
+  flush();
 };
 
 const renderNodeWithTabs = (
@@ -505,6 +571,9 @@ const renderNode = (
     return;
   }
 
+  // A <dl> without <dt>/<dd> is a layout box and falls through to the generic walk.
+  if (tag === 'DL' && renderDefinitionList(el, out, depth, pfx, opts, tabGroups, capturedPanelEls, dedupe)) return;
+
   if (tag === 'IMG') {
     if (!opts.includeImages) return;
     const alt = cleanInline(el.getAttribute('alt') || '');
@@ -571,10 +640,11 @@ const renderListItem = (
         continue;
       }
       if (LI_BLOCK_TAGS.has(c.tagName)) {
-        // A DIV with no block structure of its own is a styling wrapper: fold its children
-        // into the inline run so the bullet survives.
+        // A DIV with no block structure of its own is a styling wrapper: fold it into the
+        // inline run so the bullet survives. Pushed whole, not as its children, so two such
+        // DIVs stay apart (INLINE_BLOCK_GAP) now that inline parts are no longer space-joined.
         if (c.tagName === 'DIV' && !hasBlockContent(c)) {
-          run.push(...c.childNodes);
+          run.push(c);
           continue;
         }
         flushInline();
@@ -594,12 +664,38 @@ const renderListItem = (
 const renderInline = (el: Element, opts: RenderOpts, excludeEls?: Set<Element>): string =>
   renderInlineNodes([...el.childNodes], opts, excludeEls);
 
+const collapseWs = (t: string): string => t.replace(/ /g, ' ').replace(/[ \t\r\n\f]+/g, ' ');
+
+// Markup keeps its content's edge whitespace OUTSIDE the delimiters: `<b> bold </b>` must become
+// ` **bold** `, because `** bold **` is not emphasis.
+const wrapInline = (inner: string, wrap: (core: string) => string): string => {
+  const core = inner.trim();
+  if (!core) return /\s/.test(inner) ? ' ' : '';
+  return (/^\s/.test(inner) ? ' ' : '') + wrap(core) + (/\s$/.test(inner) ? ' ' : '');
+};
+
+// Inline parts are concatenated with the source's own whitespace, never a separator of ours.
+// linkedom splits text at EVERY character reference - `account&#39;s` arrives as the text nodes
+// "account", "'", "s", and `caf&eacute;` as "caf", "é" - so the old `parts.join(' ')` broke each
+// word holding one (P2A-002), and put a space between a link and the full stop after it. Two
+// ELEMENTS with nothing between them in the source still get one space: in a flex row of
+// `<span>Plan</span><span>starter</span>` or a minified link list that is what CSS shows, and it
+// keeps `**a***b*` from forming.
+//
+// No textContent fallback for elements that render empty, except a link's name: it could only
+// resurface text the skip list removes on purpose (script, style, an icon's SVG <title>).
 const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Set<Element>): string => {
-  const parts: string[] = [];
+  let s = '';
+  let afterElement = false;
+  const add = (part: string, fromElement: boolean): void => {
+    if (!part) return;
+    if (fromElement && afterElement && !/\s$/.test(s) && !/^\s/.test(part)) s += ' ';
+    s += part;
+    afterElement = fromElement;
+  };
   for (const node of nodes) {
     if (node.nodeType === 3 /* TEXT_NODE */) {
-      const t = cleanInline(node.textContent || '');
-      if (t) parts.push(t);
+      add(collapseWs(node.textContent || ''), false);
       continue;
     }
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
@@ -607,50 +703,91 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Set<Ele
     if (excludeEls && excludeEls.has(c)) continue;
     const tag = c.tagName;
     if (SKIP_TAGS.has(tag)) continue;
-    if (tag === 'BR') { parts.push('\n'); continue; }
+    if (tag === 'BR') { add('\n', false); continue; }
     if (tag === 'A') {
       const href = absUrl(c.getAttribute('href') || '', opts.baseUrl);
-      const text = renderInline(c, opts) || cleanInline(c.textContent || '');
-      if (text && href) parts.push(`[${escapeMd(text)}](${href})`);
-      else if (text) parts.push(escapeMd(text));
+      const inner = renderInline(c, opts, excludeEls);
+      const text = inner.trim() ? inner : cleanInline(c.textContent || '');
+      add(wrapInline(text, (t) => (href ? `[${escapeMd(t)}](${href})` : escapeMd(t))), true);
       continue;
     }
     if (tag === 'STRONG' || tag === 'B') {
-      const t = renderInline(c, opts) || cleanInline(c.textContent || '');
-      if (t) parts.push(`**${t}**`);
+      add(wrapInline(renderInline(c, opts, excludeEls), (t) => `**${t}**`), true);
       continue;
     }
     if (tag === 'EM' || tag === 'I') {
-      const t = renderInline(c, opts) || cleanInline(c.textContent || '');
-      if (t) parts.push(`*${t}*`);
+      add(wrapInline(renderInline(c, opts, excludeEls), (t) => `*${t}*`), true);
       continue;
     }
     if (tag === 'CODE') {
-      const t = cleanInline(c.textContent || '');
-      if (t) parts.push(`\`${t}\``);
+      add(wrapInline(collapseWs(c.textContent || ''), (t) => `\`${t}\``), true);
       continue;
     }
     if (tag === 'IMG') {
-      // Same includeImages contract as the block-level IMG branch: an image
-      // wrapped in a link, list item or table cell arrives here instead.
+      // Same includeImages contract and src fallback as the block-level IMG branch: an image
+      // wrapped in a link, list item, table cell or text run arrives here instead.
       if (!opts.includeImages) continue;
       const alt = cleanInline(c.getAttribute('alt') || '');
-      const src = absUrl(c.getAttribute('src') || '', opts.baseUrl);
-      if (src) parts.push(`![${escapeMd(alt || 'image')}](${src})`);
+      const src = absUrl(c.getAttribute('src') || c.getAttribute('data-src') || '', opts.baseUrl);
+      if (src) add(`![${escapeMd(alt || 'image')}](${src})`, true);
       continue;
     }
-    if (INLINE_TAGS.has(tag)) {
-      const t = renderInline(c, opts) || cleanInline(c.textContent || '');
-      if (t) parts.push(t);
-      continue;
-    }
-    // Unknown container in inline position (a P or styling DIV inside an <li>, a custom
-    // element): recurse so links and emphasis inside it survive as markdown. The old fallback
-    // took raw textContent, which kept the words but stripped every link.
-    const t = renderInlineNodes([...c.childNodes], opts, excludeEls) || cleanInline(c.textContent || '');
-    if (t) parts.push(t);
+    // Any other element, inline or a container in inline position (a P or styling DIV inside an
+    // <li>, a custom element): recurse so links and emphasis inside it survive as markdown.
+    const inner = renderInline(c, opts, excludeEls);
+    add(INLINE_BLOCK_GAP.has(tag) ? ` ${inner} ` : inner, true);
   }
-  return parts.join(' ').replace(/\s+\n\s+/g, '\n');
+  return s.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n');
+};
+
+// <dl> as the extension renders it (lib/core/html-to-md.ts in page2ai-extension): each term bold
+// on its own line, each definition on a `: ` line below it, which is the definition-list syntax
+// of Pandoc and PHP Markdown Extra and still plain to read where neither applies. HTML allows a
+// <div> around each term/definition group, so groups are looked into one level deep. Returns
+// false when the list holds no <dt>/<dd> at all, so the caller walks it as a plain container.
+//
+// Unlike the extension, a <dd> holding block content is walked, not flattened: Sphinx puts a
+// whole API entry (paragraphs, code examples, tables, nested <dl>s) inside one <dd>, and the first
+// draft of this branch turned docs.python.org's code fences and tables into one line of text.
+const renderDefinitionList = (
+  dl: Element,
+  out: string[],
+  depth: number,
+  pfx: string,
+  opts: RenderOpts,
+  tabGroups: TabGroup[],
+  capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
+): boolean => {
+  const items: Element[] = [];
+  for (const c of dl.children) {
+    if (c.tagName === 'DT' || c.tagName === 'DD') items.push(c);
+    else if (c.tagName === 'DIV') {
+      for (const g of c.children) if (g.tagName === 'DT' || g.tagName === 'DD') items.push(g);
+    }
+  }
+  if (!items.length) return false;
+  let lines: string[] = [];
+  const flushLines = (): void => {
+    if (lines.length) out.push('', ...lines, '');
+    lines = [];
+  };
+  for (const it of items) {
+    if (it.tagName === 'DD' && hasBlockContent(it)) {
+      flushLines();
+      walkWithTabs(it, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+      continue;
+    }
+    const text = renderInline(it, opts).trim();
+    if (!text) continue;
+    if (it.tagName === 'DT') {
+      lines.push(`${pfx}**${text}**`);
+      continue;
+    }
+    text.split('\n').filter((l) => l.trim()).forEach((l, i) => lines.push(`${pfx}${i === 0 ? ': ' : '  '}${l}`));
+  }
+  flushLines();
+  return true;
 };
 
 // Aliases that authors write but fence renderers do not highlight.
