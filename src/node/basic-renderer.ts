@@ -10,7 +10,7 @@
 
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
-import { absUrl, chooseCodeFence, cleanInline, escapeMd, escapeMdTableCell } from '../shared/utils.js';
+import { absUrl, chooseCodeFence, cleanInline, escapeMd, escapeMdTableCell, longestRun } from '../shared/utils.js';
 
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
@@ -40,10 +40,17 @@ const KNOWN_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'shellsess
 
 const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
 
+// The page's own <title>. querySelector('title') also finds an inline icon's <svg><title>, which became
+// a fake `# IconName` heading on any page or fragment whose <head> has no title (grok, T109).
+export const documentTitle = (doc: Document): string =>
+  [...doc.querySelectorAll('title')].find((t) => !t.closest('svg'))?.textContent || '';
+
 interface RenderOpts {
   baseUrl: string;
   includeFrontmatter: boolean;
   includeImages: boolean;
+  // Rendering the text of a link: its text nodes escape `[`, `]` and `\`.
+  inLink?: boolean;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -70,7 +77,7 @@ export const renderBasicMarkdown = (
   const parts: string[] = [];
 
   const root = pickContentRoot(doc);
-  const rawTitle = cleanInline(doc.querySelector('title')?.textContent || '');
+  const rawTitle = cleanInline(documentTitle(doc));
   // The site suffix is dropped, not relocated: an earlier draft emitted it as a `site_name:`
   // frontmatter field, which put the exact chrome string the cleanup had just removed back
   // into the output one line lower. Provenance already lives in `source:`.
@@ -190,7 +197,7 @@ const buildFrontmatter = (
   baseUrl: string,
   titleOverride?: string,
 ): string[] => {
-  const title = titleOverride ?? cleanInline(doc.querySelector('title')?.textContent || '');
+  const title = titleOverride ?? cleanInline(documentTitle(doc));
   const description = cleanInline(
     doc.querySelector('meta[name="description"]')?.getAttribute('content') || '',
   );
@@ -422,6 +429,16 @@ const walkWithTabs = (
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
+): void => walkNodes([...el.childNodes], out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+
+const walkNodes = (
+  nodes: Node[],
+  out: string[],
+  depth: number,
+  opts: RenderOpts,
+  tabGroups: TabGroup[],
+  capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
 ): void => {
   // Child NODES, not element children. Text and phrasing elements sitting directly in a container
   // collect into a run that renders as one paragraph, flushed before each block child. The walk
@@ -443,10 +460,16 @@ const walkWithTabs = (
       }
       return;
     }
-    const text = renderInlineNodes(nodes, opts).trim();
+    // A tab panel nested inside a run element is rendered under its own `### Tab:` heading.
+    const text = escapeBlockStarts(renderInlineNodes(nodes, opts, capturedPanelEls).trim());
     if (text) out.push('', text, '');
   };
-  for (const node of el.childNodes) {
+  // A custom element (`<relative-time>`, `<my-badge>`) has no user-agent style, so it is inline unless
+  // its own CSS says otherwise. Among the bare words of its parent it is part of the sentence
+  // ("opened Oct 3 · 5 comments", not three paragraphs); among element siblings only (a Material
+  // card's title and subtitle) it stays a block, which is how such components are usually styled.
+  const parentHasText = nodes.some((n) => n.nodeType === 3 && /\S/.test(n.textContent || ''));
+  for (const node of nodes) {
     if (node.nodeType === 3 /* TEXT_NODE */) {
       run.push(node);
       continue;
@@ -455,8 +478,9 @@ const walkWithTabs = (
     const c = node as Element;
     // Skipped where they stand, without ending the run: renderNode would drop them anyway.
     if (SKIP_TAGS.has(c.tagName)) continue;
-    if (PHRASING_TAGS.has(c.tagName) && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
-      if (c.getAttribute('aria-hidden') === 'true') continue;
+    const phrasing = PHRASING_TAGS.has(c.tagName) || (parentHasText && c.tagName.includes('-'));
+    if (phrasing && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
+      if (isAriaHidden(c)) continue;
       // A link wrapping a whole card (<a><div><h3>..</h3><p>..</p></div></a>) stays a block.
       if (!hasBlockContent(c)) {
         run.push(c);
@@ -504,7 +528,7 @@ const renderNode = (
 ): void => {
   const tag = el.tagName;
   if (SKIP_TAGS.has(tag)) return;
-  if (el.getAttribute('aria-hidden') === 'true') return;
+  if (isAriaHidden(el)) return;
 
   const pfx = '   '.repeat(depth);
 
@@ -530,16 +554,16 @@ const renderNode = (
   }
 
   if (tag === 'P') {
-    const text = renderInline(el, opts).trim();
+    const text = escapeBlockStarts(renderInline(el, opts, capturedPanelEls).trim());
     if (text) out.push('', text, '');
     return;
   }
 
   if (tag === 'A') {
     const href = absUrl(el.getAttribute('href') || '', opts.baseUrl);
-    const text = renderInline(el, opts).trim() || cleanInline(el.textContent || '');
-    if (text && href) out.push(`${pfx}[${escapeMd(text)}](${href})`);
-    else if (text) out.push(`${pfx}${escapeMd(text)}`);
+    const text = linkText(el, opts, href, capturedPanelEls);
+    if (text && href) out.push(`${pfx}[${text}](${href})`);
+    else if (text) out.push(`${pfx}${escapeBlockStart(text)}`);
     return;
   }
 
@@ -617,8 +641,10 @@ const renderListItem = (
 ): void => {
   let emittedMarker = false;
   let run: Node[] = [];
-  const emitLine = (text: string): void => {
-    if (!text) return;
+  const emitLine = (raw: string): void => {
+    if (!raw) return;
+    // `- 1. x` would be a list inside the item and `- # x` a heading inside it.
+    const text = escapeBlockStarts(raw);
     if (!emittedMarker) {
       out.push(`${pfx}${marker} ${text}`);
       emittedMarker = true;
@@ -627,7 +653,7 @@ const renderListItem = (
     }
   };
   const flushInline = (): void => {
-    const text = renderInlineNodes(run, opts).trim();
+    const text = renderInlineNodes(run, opts, capturedPanelEls).trim();
     run = [];
     emitLine(text);
   };
@@ -636,7 +662,7 @@ const renderListItem = (
       const c = node as Element;
       if (c.tagName === 'P') {
         flushInline();
-        emitLine(renderInline(c, opts).trim());
+        emitLine(renderInline(c, opts, capturedPanelEls).trim());
         continue;
       }
       if (LI_BLOCK_TAGS.has(c.tagName)) {
@@ -661,8 +687,71 @@ const renderListItem = (
   flushInline();
 };
 
-const renderInline = (el: Element, opts: RenderOpts, excludeEls?: Set<Element>): string =>
+type ElementFilter = { has(el: Element): boolean };
+
+const renderInline = (el: Element, opts: RenderOpts, excludeEls?: ElementFilter): string =>
   renderInlineNodes([...el.childNodes], opts, excludeEls);
+
+const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
+
+// A line of page TEXT that starts with Markdown block syntax becomes that block: `# x` a heading, `> x`
+// a quote, `1. x` a list, `---` a rule, `<div` raw HTML, and an unclosed ``` fence swallows every line
+// after it (T109 panel: `<div>```</div><p>AFTER</p>` put AFTER inside a code block). The renderer's own
+// inline markup never starts a line with any of these, so escaping each emitted line start is safe.
+const escapeBlockStart = (line: string): string => {
+  const lead = /^[ \t]*/.exec(line)![0];
+  const rest = line.slice(lead.length);
+  if (
+    /^(?:#{1,6}(?:\s|$)|>|[-+*](?:\s|$)|~{3}|<[A-Za-z/!?])/.test(rest) ||
+    /^`{3,}[^`]*$/.test(rest) ||
+    /^(?:=+|-+)\s*$/.test(rest) ||
+    /^([*_-])(?:\s*\1){2,}\s*$/.test(rest)
+  ) return `${lead}\\${rest}`;
+  const ol = /^\d{1,9}(?=[.)](?:\s|$))/.exec(rest);
+  return ol ? `${lead}${ol[0]}\\${rest.slice(ol[0].length)}` : line;
+};
+const escapeBlockStarts = (text: string): string => text.split('\n').map(escapeBlockStart).join('\n');
+
+const escapeLinkText = (t: string): string => t.replace(/[\\[\]]/g, '\\$&');
+
+// A link's text as Markdown, on one line: rendered inline with only the brackets and backslashes of its
+// TEXT escaped. escapeMd over the already rendered text turned `<a><code>x</code></a>` into [\`x\`](u)
+// and bold link text into literal \*\* stars (T109 panel: spark, grok, mimo; there since 0.1.0).
+const linkText = (a: Element, opts: RenderOpts, href: string, excludeEls?: ElementFilter, trim = true): string => {
+  const inner = renderInline(a, href ? { ...opts, inLink: true } : opts, excludeEls).replace(/[ \t]*\n[ \t]*/g, ' ');
+  if (inner.trim()) return trim ? inner.trim() : inner;
+  const fallback = cleanInline(a.textContent || '');
+  return href ? escapeLinkText(fallback) : fallback;
+};
+
+// A code span needs a fence longer than any backtick run inside it, padded with a space when the text
+// starts or ends with a backtick (CommonMark 6.1): `a`b` closed after "a", and ``x`` lost its backticks.
+const codeSpan = (t: string): string => {
+  const fence = '`'.repeat(longestRun(t, '`') + 1);
+  const pad = t.startsWith('`') || t.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${t}${pad}${fence}`;
+};
+
+const WORD_START = /^[\p{L}\p{N}]/u;
+const WORD_END = /[\p{L}\p{N}]$/u;
+const PUNCT_START = /^[\p{P}\p{S}]/u;
+const PUNCT_END = /[\p{P}\p{S}]$/u;
+// Scripts written without spaces between words.
+const UNSPACED_START = /^[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}]/u;
+const UNSPACED_END = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}]$/u;
+
+// Two ELEMENTS with nothing between them in the source get a space (a flex row of
+// `<span>Plan</span><span>starter</span>`, a pilcrow link after a heading link: the gap is CSS), except
+// where the junction sits inside one token: a script written without spaces (`東`+`京`), a currency
+// and its amount (`$`+`19.99`), punctuation that attaches to what precedes it (`19`+`.99`, `60`+`%`),
+// an opening bracket and what follows it, an `@` (`user`+`@x.test`). The blanket space split all of
+// those (T109 panel). The panel's own proposal, a space only between two alphanumerics, glued
+// `Inc.·[Trademark`, `more.[View docs` and `👍No` on the benchmark corpus, so it was not taken.
+const wordsTouch = (left: string, right: string): boolean =>
+  !!left && !!right &&
+  !(UNSPACED_END.test(left) || UNSPACED_START.test(right) ||
+    (/\p{Sc}$/u.test(left) && /^\p{N}/u.test(right)) ||
+    /^[.,;:!?%)\]}»”’@]/u.test(right) || /[([{«“‘@]$/u.test(left));
 
 const collapseWs = (t: string): string => t.replace(/ /g, ' ').replace(/[ \t\r\n\f]+/g, ' ');
 
@@ -678,49 +767,71 @@ const wrapInline = (inner: string, wrap: (core: string) => string): string => {
 // linkedom splits text at EVERY character reference - `account&#39;s` arrives as the text nodes
 // "account", "'", "s", and `caf&eacute;` as "caf", "é" - so the old `parts.join(' ')` broke each
 // word holding one (P2A-002), and put a space between a link and the full stop after it. Two
-// ELEMENTS with nothing between them in the source still get one space: in a flex row of
-// `<span>Plan</span><span>starter</span>` or a minified link list that is what CSS shows, and it
-// keeps `**a***b*` from forming.
+// ELEMENTS with nothing between them get a space only between words (wordsTouch).
+//
+// Where markup is glued to its neighbour, the junction must still parse as intended (T109, checked
+// with micromark): `**Note:**text` and `word**(x)**` are literal stars because the delimiter sits
+// between punctuation and a letter, so emphasis is spaced from the letter there; `Hey!` + `[link](u)`
+// is an image and `C:\` + `[d](u)` escapes the bracket, so that `!` or `\` is escaped.
 //
 // No textContent fallback for elements that render empty, except a link's name: it could only
 // resurface text the skip list removes on purpose (script, style, an icon's SVG <title>).
-const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Set<Element>): string => {
+const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: ElementFilter): string => {
   let s = '';
   let afterElement = false;
-  const add = (part: string, fromElement: boolean): void => {
+  let lastVisible = '';
+  let punctEdge = false;
+  const add = (part: string, fromElement: boolean, visible = part, leadPunct = false): void => {
     if (!part) return;
-    if (fromElement && afterElement && !/\s$/.test(s) && !/^\s/.test(part)) s += ' ';
+    if (s && !/\s$/.test(s) && !/^\s/.test(part)) {
+      if (fromElement && afterElement && (wordsTouch(lastVisible, visible) || (s.endsWith('*') && part.startsWith('*')))) {
+        s += ' ';
+      } else if ((punctEdge && WORD_START.test(part)) || (leadPunct && WORD_END.test(s))) {
+        s += ' ';
+      } else if (fromElement && /(?:^|[^\\])(?:\\\\)*\\$/.test(s) && /^[[!*`_]/.test(part)) {
+        s += '\\';
+      } else if (fromElement && part.startsWith('[') && /(?:^|[^\\])(?:\\\\)*!$/.test(s)) {
+        s = `${s.slice(0, -1)}\\!`;
+      }
+    }
     s += part;
     afterElement = fromElement;
+    lastVisible = visible;
+    punctEdge = false;
   };
+  const visibleText = (el: Element, rendered: string): string => collapseWs(el.textContent || '').trim() || rendered.trim();
   for (const node of nodes) {
     if (node.nodeType === 3 /* TEXT_NODE */) {
-      add(collapseWs(node.textContent || ''), false);
+      const t = collapseWs(node.textContent || '');
+      add(opts.inLink ? escapeLinkText(t) : t, false, t);
       continue;
     }
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const c = node as Element;
     if (excludeEls && excludeEls.has(c)) continue;
     const tag = c.tagName;
+    // aria-hidden is NOT skipped here, although the block walk skips it: docs.sentry.io puts the whole text
+    // of 15 <h2>s inside `<a aria-hidden="true">`, and skipping it deleted every one (T109 A/B). The
+    // attribute hides from screen readers, not from the screen.
     if (SKIP_TAGS.has(tag)) continue;
     if (tag === 'BR') { add('\n', false); continue; }
     if (tag === 'A') {
       const href = absUrl(c.getAttribute('href') || '', opts.baseUrl);
+      const text = linkText(c, opts, href, excludeEls, false);
+      add(wrapInline(text, (t) => (href ? `[${t}](${href})` : t)), true, visibleText(c, text));
+      continue;
+    }
+    if (tag === 'STRONG' || tag === 'B' || tag === 'EM' || tag === 'I') {
+      const mark = tag === 'STRONG' || tag === 'B' ? '**' : '*';
       const inner = renderInline(c, opts, excludeEls);
-      const text = inner.trim() ? inner : cleanInline(c.textContent || '');
-      add(wrapInline(text, (t) => (href ? `[${escapeMd(t)}](${href})` : escapeMd(t))), true);
-      continue;
-    }
-    if (tag === 'STRONG' || tag === 'B') {
-      add(wrapInline(renderInline(c, opts, excludeEls), (t) => `**${t}**`), true);
-      continue;
-    }
-    if (tag === 'EM' || tag === 'I') {
-      add(wrapInline(renderInline(c, opts, excludeEls), (t) => `*${t}*`), true);
+      const core = inner.trim();
+      add(wrapInline(inner, (t) => `${mark}${t}${mark}`), true, visibleText(c, inner), PUNCT_START.test(core));
+      punctEdge = PUNCT_END.test(core) && !/\s$/.test(inner);
       continue;
     }
     if (tag === 'CODE') {
-      add(wrapInline(collapseWs(c.textContent || ''), (t) => `\`${t}\``), true);
+      const code = collapseWs(c.textContent || '');
+      add(wrapInline(code, codeSpan), true, code.trim());
       continue;
     }
     if (tag === 'IMG') {
@@ -729,13 +840,13 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Set<Ele
       if (!opts.includeImages) continue;
       const alt = cleanInline(c.getAttribute('alt') || '');
       const src = absUrl(c.getAttribute('src') || c.getAttribute('data-src') || '', opts.baseUrl);
-      if (src) add(`![${escapeMd(alt || 'image')}](${src})`, true);
+      if (src) add(`![${escapeMd(alt || 'image')}](${src})`, true, alt || 'image');
       continue;
     }
     // Any other element, inline or a container in inline position (a P or styling DIV inside an
     // <li>, a custom element): recurse so links and emphasis inside it survive as markdown.
     const inner = renderInline(c, opts, excludeEls);
-    add(INLINE_BLOCK_GAP.has(tag) ? ` ${inner} ` : inner, true);
+    add(INLINE_BLOCK_GAP.has(tag) ? ` ${inner} ` : inner, true, visibleText(c, inner));
   }
   return s.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n');
 };
@@ -759,33 +870,51 @@ const renderDefinitionList = (
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
 ): boolean => {
-  const items: Element[] = [];
-  for (const c of dl.children) {
-    if (c.tagName === 'DT' || c.tagName === 'DD') items.push(c);
-    else if (c.tagName === 'DIV') {
-      for (const g of c.children) if (g.tagName === 'DT' || g.tagName === 'DD') items.push(g);
-    }
+  const isItem = (n: Node): boolean => n.nodeType === 1 && ((n as Element).tagName === 'DT' || (n as Element).tagName === 'DD');
+  const isGroup = (n: Node): boolean => n.nodeType === 1 && (n as Element).tagName === 'DIV' && [...(n as Element).childNodes].some(isItem);
+  if (![...dl.childNodes].some((n) => isItem(n) || isGroup(n))) return false;
+  // Everything else in the list (a note, a heading, bare text: invalid HTML that browsers still show)
+  // is walked where it stands. The first version collected only <dt>/<dd> and silently dropped the
+  // rest, text 0.1.11 had printed (T109 panel, agy + grok: `<dl><p>Note</p><dt>..` lost "Note").
+  const seq: Node[] = [];
+  for (const n of dl.childNodes) {
+    if (isGroup(n)) seq.push(...(n as Element).childNodes);
+    else seq.push(n);
   }
-  if (!items.length) return false;
   let lines: string[] = [];
+  let stray: Node[] = [];
   const flushLines = (): void => {
     if (lines.length) out.push('', ...lines, '');
     lines = [];
   };
-  for (const it of items) {
+  const flushStray = (): void => {
+    if (stray.length) walkNodes(stray, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+    stray = [];
+  };
+  for (const n of seq) {
+    if (!isItem(n)) {
+      if (n.nodeType === 1 ? !SKIP_TAGS.has((n as Element).tagName) : n.nodeType === 3 && /\S/.test(n.textContent || '')) {
+        flushLines();
+        stray.push(n);
+      }
+      continue;
+    }
+    flushStray();
+    const it = n as Element;
     if (it.tagName === 'DD' && hasBlockContent(it)) {
       flushLines();
       walkWithTabs(it, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
       continue;
     }
-    const text = renderInline(it, opts).trim();
+    const text = renderInline(it, opts, capturedPanelEls).trim();
     if (!text) continue;
     if (it.tagName === 'DT') {
       lines.push(`${pfx}**${text}**`);
       continue;
     }
-    text.split('\n').filter((l) => l.trim()).forEach((l, i) => lines.push(`${pfx}${i === 0 ? ': ' : '  '}${l}`));
+    text.split('\n').filter((l) => l.trim()).forEach((l, i) => lines.push(`${pfx}${i === 0 ? ': ' : '  '}${i === 0 ? l : escapeBlockStart(l)}`));
   }
+  flushStray();
   flushLines();
   return true;
 };
@@ -869,11 +998,32 @@ const renderCodeBlock = (pre: Element, out: string[]): void => {
   out.push(fence, '');
 };
 
+// A cell's text as a reader sees it. Raw textContent turned a pretty-printed template's indentation
+// (`<td>\n  value\n</td>`, every Jinja/ERB admin table) into `<br> value<br>`, glued `a<br>b` and two
+// <div> lines into one word, and printed <script>/<svg><title> text (T109, probing the panel's claims).
+const cellText = (el: Element): string => {
+  let s = '';
+  for (const n of el.childNodes) {
+    if (n.nodeType === 3) { s += collapseWs(n.textContent || ''); continue; }
+    if (n.nodeType !== 1) continue;
+    const c = n as Element;
+    if (SKIP_TAGS.has(c.tagName)) continue;
+    if (c.tagName === 'BR') { s += '\n'; continue; }
+    const inner = cellText(c);
+    s += INLINE_BLOCK_GAP.has(c.tagName) ? ` ${inner} ` : inner;
+  }
+  return s;
+};
+
 const renderTable = (tbl: HTMLTableElement, out: string[]): void => {
   const rows = [...tbl.querySelectorAll('tr')];
   if (!rows.length) return;
+  // <caption> text was never printed (grok, T109): it names the table.
+  const capEl = tbl.querySelector('caption');
+  const caption = capEl ? escapeBlockStart(cleanInline(cellText(capEl))) : '';
+  if (caption) out.push('', caption);
   const data = rows.map((tr) =>
-    [...tr.querySelectorAll('th, td')].map((c) => escapeMdTableCell(c.textContent || '')),
+    [...tr.querySelectorAll('th, td')].map((c) => escapeMdTableCell(cellText(c).replace(/ *\n */g, '\n').replace(/^\n+|\n+$/g, ''))),
   );
   const width = Math.max(...data.map((r) => r.length));
   const padded = data.map((r) => { while (r.length < width) r.push(''); return r; });

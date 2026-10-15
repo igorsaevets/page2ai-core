@@ -6,7 +6,9 @@ All notable changes to `@page2ai/core`.
 
 Output changes on most pages; the extension, the MCP server and the benchmark numbers move with it.
 On the 14-page benchmark corpus no word, code fence, table row, heading or list item of the 0.1.11
-output is lost, `f_score` stays 0.916, and 9 pages gain text that 0.1.11 dropped.
+output is lost, `f_score` stays 0.916, and 9 pages gain text that 0.1.11 dropped. A six-model
+review of that change found the defects listed after the first five entries; each was reproduced on
+the build before it was fixed, and Markdown claims were checked with a CommonMark parser.
 
 ### Fixed
 
@@ -30,6 +32,28 @@ output is lost, `f_score` stays 0.916, and 9 pages gain text that 0.1.11 dropped
   shell.
 - An empty extraction now says `<!-- AI: page has no extractable body content -->` instead of
   returning nothing.
+- **A `<dl>` no longer drops its other children.** With any `<dt>`/`<dd>` present, a note, heading
+  or bare text inside the list vanished, text 0.1.11 had printed. It now renders in place.
+- **Page text that looks like Markdown stays text.** A line starting with `#`, `>`, `1.`, `-`,
+  `---`, `<tag` or a code fence became that block; an unclosed fence in a `<div>` put the rest of
+  the page inside a code block. Such line starts are escaped.
+- **Adjacent elements are no longer spaced inside a token.** `$`+`19.99`, `19`+`.99`,
+  `user`+`@x.test` and CJK characters came out as `$ 19.99`, `19 .99`, `user @x.test`, `東 京`.
+  Words in a flex row (`Plan`+`starter`) still get their space.
+- **Markup glued to text parses as written.** `Hey!` before a link made an image, a backslash before
+  one broke it, and bold ending in punctuation before a letter (`**Note:**text`) was literal stars.
+- **Link text is Markdown.** Code, bold and images inside a link were escaped into literal
+  backticks, stars and brackets (`[\`x\`](u)`), which also put backslashes into image URLs; only the
+  brackets and backslashes of the link's own text are escaped now.
+- **Code spans holding a backtick** use a longer fence (`` ``a`b`` ``) instead of closing early.
+- **Table cells**: template indentation no longer becomes `<br>` in every cell, `a<br>b` and two
+  `<div>` lines no longer glue into one word, `<script>` and icon `<title>` text stay out, and the
+  `<caption>` is printed.
+- A custom element between words (`<relative-time>`) stays in its sentence; a tab panel nested in a
+  `<span>` prints once; `aria-hidden="True"` is honoured like `"true"`; an icon's `<svg><title>` is
+  no longer taken for the page title; a fragment with `<body>` in the middle keeps the text before it.
+- **SSRF guard: link-local is `fe80::/10`.** Only the `fe80:` prefix was blocked, so `fe90::1`
+  through `febf::` passed.
 
 ### Changed
 

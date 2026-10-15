@@ -14,7 +14,7 @@
 
 import { parseHTML } from 'linkedom';
 import { LinkedomAdapter } from './linkedom-adapter.js';
-import { renderBasicMarkdown } from './basic-renderer.js';
+import { documentTitle, renderBasicMarkdown } from './basic-renderer.js';
 import { fetchProtected } from './fetch-protected.js';
 import { assertSafeUrl } from './ssrf-guard.js';
 import { CORE_VERSION } from '../shared/constants.js';
@@ -53,7 +53,10 @@ const parseDocument = (html: string): Document => {
   const first = parseHTML(html).document as unknown as Document;
   if (first.documentElement?.tagName === 'HTML') return first;
   const inner = html.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
-  const shell = /<(?:head|body)[\s>]/i.test(inner)
+  // Only a fragment that STARTS with <head> or <body> brings its own; one met later is wrapped like any
+  // other content. Matching `<body` anywhere left `the <body> tag is required` outside the body, losing
+  // "the " (mimo, T109).
+  const shell = /^\s*(?:<!--[\s\S]*?-->\s*)*<(?:head|body)[\s>]/i.test(inner)
     ? `<!DOCTYPE html><html>${inner}</html>`
     : `<!DOCTYPE html><html><head></head><body>${inner}</body></html>`;
   return parseHTML(shell).document as unknown as Document;
@@ -67,7 +70,7 @@ export const htmlToMarkdown = (
   try {
     const document = parseDocument(html);
     const adapter = new LinkedomAdapter(document, injectedBase);
-    const title = (document.querySelector('title')?.textContent || '').trim();
+    const title = documentTitle(document).trim();
     const markdown = renderBasicMarkdown(document, adapter, {
       baseUrl: adapter.baseUrl(),
       includeFrontmatter: opts.includeFrontmatter ?? true,

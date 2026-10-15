@@ -33,7 +33,9 @@ const PRIVATE_IPV4_PATTERNS: RegExp[] = [
 const BLOCKED_IPV6_PREFIXES: string[] = [
   '::1',      // loopback
   '::ffff:',  // IPv4-mapped (blanket: blocks the whole mapped form)
-  'fe80:',    // link-local
+  // link-local is fe80::/10, i.e. fe80 through febf (T109: only `fe80:` was blocked, fe90::1 passed).
+  // A shorter address such as fe9::1 is 0fe9::1, IETF-reserved and unroutable, so over-blocking it is harmless.
+  'fe8', 'fe9', 'fea', 'feb',
   'fc',       // unique local (fc00::/7)
   'fd',       // unique local
 ];

@@ -49,6 +49,8 @@ describe('findIpBlockReason — pure address checks', () => {
       '127.0.0.1', '10.1.2.3', '169.254.169.254', '172.16.0.1',
       '192.168.1.1', '100.64.0.1', '::1', 'fe80::1', 'fc00::1', 'fd12::1',
       '::ffff:127.0.0.1',
+      // the whole of link-local fe80::/10, not only the fe80: prefix (T109: fe90::1 passed)
+      'fe90::1', 'fea0::1', 'febf:ffff::1',
     ]) {
       expect(findIpBlockReason(bad), bad).not.toBeNull();
     }
