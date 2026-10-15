@@ -96,7 +96,7 @@ export const renderBasicMarkdown = (
     const lines: string[] = [];
     void adapter;
     const dedupe: TitleDedupe = { pendingTitle: title ? squeezeText(title) : '' };
-    walkWithTabs(root, lines, 0, opts, tabGroups, capturedPanelEls, dedupe);
+    walkWithTabs(root, lines, opts, tabGroups, capturedPanelEls, dedupe);
     // An empty walk is said out loud: a bare "" or a lone title reads as "the page is empty"
     // when the cause is client-side rendering or markup the walk did not understand (P2A-003).
     if (lines.some((l) => l.trim())) parts.push(...lines);
@@ -424,17 +424,15 @@ const discoverTabGroups = (root: Element): TabGroup[] => {
 const walkWithTabs = (
   el: Element,
   out: string[],
-  depth: number,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
-): void => walkNodes([...el.childNodes], out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+): void => walkNodes([...el.childNodes], out, opts, tabGroups, capturedPanelEls, dedupe);
 
 const walkNodes = (
   nodes: Node[],
   out: string[],
-  depth: number,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
@@ -456,7 +454,7 @@ const walkNodes = (
     // one-per-line rendering, so a page without stray text renders exactly as before.
     if (!hasText && nodes.every((n) => n.nodeType !== 1 || RUN_ATOMS.has((n as Element).tagName))) {
       for (const n of nodes) {
-        if (n.nodeType === 1) renderNodeWithTabs(n as Element, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+        if (n.nodeType === 1) renderNodeWithTabs(n as Element, out, opts, tabGroups, capturedPanelEls, dedupe);
       }
       return;
     }
@@ -488,7 +486,7 @@ const walkNodes = (
       }
     }
     flush();
-    renderNodeWithTabs(c, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+    renderNodeWithTabs(c, out, opts, tabGroups, capturedPanelEls, dedupe);
   }
   flush();
 };
@@ -496,7 +494,6 @@ const walkNodes = (
 const renderNodeWithTabs = (
   el: Element,
   out: string[],
-  depth: number,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
@@ -510,17 +507,17 @@ const renderNodeWithTabs = (
   if (group) {
     for (const panel of group.panels) {
       out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
-      walkWithTabs(panel.el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+      walkWithTabs(panel.el, out, opts, tabGroups, capturedPanelEls, dedupe);
     }
     return;
   }
-  renderNode(el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+  renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
+// Every block renders flush left; a list item indents what it holds (renderListItem).
 const renderNode = (
   el: Element,
   out: string[],
-  depth: number,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
@@ -529,8 +526,6 @@ const renderNode = (
   const tag = el.tagName;
   if (SKIP_TAGS.has(tag)) return;
   if (isAriaHidden(el)) return;
-
-  const pfx = '   '.repeat(depth);
 
   if (/^H[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1));
@@ -562,14 +557,14 @@ const renderNode = (
   if (tag === 'A') {
     const href = absUrl(el.getAttribute('href') || '', opts.baseUrl);
     const text = linkText(el, opts, href, capturedPanelEls);
-    if (text && href) out.push(`${pfx}[${text}](${href})`);
-    else if (text) out.push(`${pfx}${escapeBlockStart(text)}`);
+    if (text && href) out.push(`[${text}](${mdUrl(href)})`);
+    else if (text) out.push(escapeBlockStart(text));
     return;
   }
 
   if (tag === 'BLOCKQUOTE') {
     const inner: string[] = [];
-    walkWithTabs(el, inner, depth, opts, tabGroups, capturedPanelEls, dedupe);
+    walkWithTabs(el, inner, opts, tabGroups, capturedPanelEls, dedupe);
     const text = inner.join('\n').trim();
     if (text) {
       out.push('');
@@ -584,7 +579,7 @@ const renderNode = (
     let i = 1;
     for (const li of items) {
       const marker = tag === 'OL' ? `${i}.` : '-';
-      renderListItem(li, marker, out, depth, pfx, opts, tabGroups, capturedPanelEls, dedupe);
+      renderListItem(li, marker, out, opts, tabGroups, capturedPanelEls, dedupe);
       i++;
     }
     return;
@@ -596,20 +591,20 @@ const renderNode = (
   }
 
   // A <dl> without <dt>/<dd> is a layout box and falls through to the generic walk.
-  if (tag === 'DL' && renderDefinitionList(el, out, depth, pfx, opts, tabGroups, capturedPanelEls, dedupe)) return;
+  if (tag === 'DL' && renderDefinitionList(el, out, opts, tabGroups, capturedPanelEls, dedupe)) return;
 
   if (tag === 'IMG') {
     if (!opts.includeImages) return;
     const alt = cleanInline(el.getAttribute('alt') || '');
     const src = absUrl(el.getAttribute('src') || el.getAttribute('data-src') || '', opts.baseUrl);
-    if (src) out.push(`${pfx}![${escapeMd(alt || 'image')}](${src})`);
+    if (src) out.push(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`);
     return;
   }
 
   if (tag === 'HR') { out.push('', '---', ''); return; }
   if (tag === 'BR') { out.push(''); return; }
 
-  walkWithTabs(el, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+  walkWithTabs(el, out, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
 // Block tags that, as direct children of an <li>, render below the bullet instead of being
@@ -628,41 +623,64 @@ const hasBlockContent = (el: Element): boolean =>
 // authored. The first approach rendered all inline text first and all blocks after it, which
 // reordered `<li>Text1 <pre>..</pre> Text2</li>` into Text1 Text2 pre — a reviewer-found
 // defect, fixed before it ever shipped.
+//
+// Each block child renders flush left into its own buffer and is then indented under the marker,
+// so a CommonMark parser keeps it inside the item (BL-37). Blocks used to start at column 0 after
+// a blank line, which ends the list: the code of every "1. Install:" step left its list and the
+// numbering restarted, an item STARTING with a block printed a bare `-` and a blank line (an
+// empty item), and a nested list indented by depth alone did not nest under `10.`. A bare marker
+// is never printed now: the first block line goes on the marker line (`- ```js`), because a bare
+// `-` below a line of text is a setext underline and made that text a `##` heading.
 const renderListItem = (
   li: Element,
   marker: string,
   out: string[],
-  depth: number,
-  pfx: string,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
 ): void => {
+  // The item's content starts one space after the marker. Later lines sit three spaces in, as
+  // they always have, or at the content column when the marker is wider (`10. ` needs four). The
+  // rest of a block opened on the marker line sits exactly at the content column: a fence opened
+  // there strips no indentation from its code, so any extra space would enter the code.
+  const exact = ' '.repeat(marker.length + 1);
+  const cont = ' '.repeat(Math.max(3, marker.length + 1));
   let emittedMarker = false;
+  // The last block ended on a content line (a nested list does): text after it needs a blank line,
+  // or it continues that list's last item.
+  let openBlock = false;
   let run: Node[] = [];
-  const emitLine = (raw: string): void => {
-    if (!raw) return;
-    // `- 1. x` would be a list inside the item and `- # x` a heading inside it.
-    const text = escapeBlockStarts(raw);
+  const emit = (lines: string[], isBlock: boolean): void => {
+    let i = 0;
+    let indent = cont;
     if (!emittedMarker) {
-      out.push(`${pfx}${marker} ${text}`);
+      while (i < lines.length && !lines[i].trim()) i++;
+      if (i === lines.length) return;
+      out.push(`${marker} ${lines[i++]}`);
       emittedMarker = true;
-    } else {
-      out.push(`${pfx}   ${text}`);
+      if (isBlock) indent = exact;
+    } else if (openBlock && !isBlock) {
+      out.push('');
     }
+    for (; i < lines.length; i++) out.push(lines[i] ? indent + lines[i] : '');
+    openBlock = isBlock && lines[lines.length - 1].trim() !== '';
+  };
+  const emitText = (raw: string): void => {
+    // `- 1. x` would be a list inside the item and `- # x` a heading inside it.
+    if (raw) emit(escapeBlockStarts(raw).split('\n'), false);
   };
   const flushInline = (): void => {
     const text = renderInlineNodes(run, opts, capturedPanelEls).trim();
     run = [];
-    emitLine(text);
+    emitText(text);
   };
   for (const node of li.childNodes) {
     if (node.nodeType === 1 /* ELEMENT_NODE */) {
       const c = node as Element;
       if (c.tagName === 'P') {
         flushInline();
-        emitLine(renderInline(c, opts, capturedPanelEls).trim());
+        emitText(renderInline(c, opts, capturedPanelEls).trim());
         continue;
       }
       if (LI_BLOCK_TAGS.has(c.tagName)) {
@@ -674,11 +692,9 @@ const renderListItem = (
           continue;
         }
         flushInline();
-        if (!emittedMarker) {
-          out.push(`${pfx}${marker}`);
-          emittedMarker = true;
-        }
-        renderNodeWithTabs(c, out, depth + 1, opts, tabGroups, capturedPanelEls, dedupe);
+        const inner: string[] = [];
+        renderNodeWithTabs(c, inner, opts, tabGroups, capturedPanelEls, dedupe);
+        emit(inner.join('\n').split('\n'), true);
         continue;
       }
     }
@@ -713,6 +729,20 @@ const escapeBlockStart = (line: string): string => {
 const escapeBlockStarts = (text: string): string => text.split('\n').map(escapeBlockStart).join('\n');
 
 const escapeLinkText = (t: string): string => t.replace(/[\\[\]]/g, '\\$&');
+
+// A link destination may hold parentheses only in balanced pairs, and no spaces or angle brackets
+// (CommonMark 6.3): `https://x.test/a)b` ended the link after `a`, and a relative href that could not
+// be resolved kept its spaces (BL-37). Those characters are percent-encoded; a balanced URL such as
+// `/wiki/Foo_(bar)` is left as written.
+const mdUrl = (u: string): string => {
+  let open = 0;
+  for (const ch of u) {
+    if (ch === '(') open++;
+    else if (ch === ')' && --open < 0) break;
+  }
+  const parens = open === 0 ? u : u.replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29'));
+  return parens.replace(/[\s<>]/g, (c) => encodeURIComponent(c));
+};
 
 // A link's text as Markdown, on one line: rendered inline with only the brackets and backslashes of its
 // TEXT escaped. escapeMd over the already rendered text turned `<a><code>x</code></a>` into [\`x\`](u)
@@ -818,7 +848,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     if (tag === 'A') {
       const href = absUrl(c.getAttribute('href') || '', opts.baseUrl);
       const text = linkText(c, opts, href, excludeEls, false);
-      add(wrapInline(text, (t) => (href ? `[${t}](${href})` : t)), true, visibleText(c, text));
+      add(wrapInline(text, (t) => (href ? `[${t}](${mdUrl(href)})` : t)), true, visibleText(c, text));
       continue;
     }
     if (tag === 'STRONG' || tag === 'B' || tag === 'EM' || tag === 'I') {
@@ -840,7 +870,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
       if (!opts.includeImages) continue;
       const alt = cleanInline(c.getAttribute('alt') || '');
       const src = absUrl(c.getAttribute('src') || c.getAttribute('data-src') || '', opts.baseUrl);
-      if (src) add(`![${escapeMd(alt || 'image')}](${src})`, true, alt || 'image');
+      if (src) add(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`, true, alt || 'image');
       continue;
     }
     // Any other element, inline or a container in inline position (a P or styling DIV inside an
@@ -863,8 +893,6 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
 const renderDefinitionList = (
   dl: Element,
   out: string[],
-  depth: number,
-  pfx: string,
   opts: RenderOpts,
   tabGroups: TabGroup[],
   capturedPanelEls: WeakSet<Element>,
@@ -888,7 +916,7 @@ const renderDefinitionList = (
     lines = [];
   };
   const flushStray = (): void => {
-    if (stray.length) walkNodes(stray, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+    if (stray.length) walkNodes(stray, out, opts, tabGroups, capturedPanelEls, dedupe);
     stray = [];
   };
   for (const n of seq) {
@@ -903,16 +931,16 @@ const renderDefinitionList = (
     const it = n as Element;
     if (it.tagName === 'DD' && hasBlockContent(it)) {
       flushLines();
-      walkWithTabs(it, out, depth, opts, tabGroups, capturedPanelEls, dedupe);
+      walkWithTabs(it, out, opts, tabGroups, capturedPanelEls, dedupe);
       continue;
     }
     const text = renderInline(it, opts, capturedPanelEls).trim();
     if (!text) continue;
     if (it.tagName === 'DT') {
-      lines.push(`${pfx}**${text}**`);
+      lines.push(`**${text}**`);
       continue;
     }
-    text.split('\n').filter((l) => l.trim()).forEach((l, i) => lines.push(`${pfx}${i === 0 ? ': ' : '  '}${i === 0 ? l : escapeBlockStart(l)}`));
+    text.split('\n').filter((l) => l.trim()).forEach((l, i) => lines.push(`${i === 0 ? ': ' : '  '}${i === 0 ? l : escapeBlockStart(l)}`));
   }
   flushStray();
   flushLines();

@@ -10,6 +10,13 @@
 //   code       a code span holding a backtick closed early
 //   tables     source indentation became `<br>` in every cell, `a<br>b` and two <div> lines glued
 //   title      an icon's <svg><title> became the page's `# heading`
+//
+// BL-37, the follow-ups of the same review (T110), each output parsed with micromark 4 + GFM:
+//   list items a block in an item (code, table, <dl>, quote) started at column 0 and ended the list;
+//              an item starting with one printed a bare `-` and a blank line; a nested list did not
+//              nest under `10.`; text before a nested item that starts with a block became `##`
+//   links      a `)` or `(` without its pair ended the link destination early
+//   </body>    text after a stray </body> or </html> was dropped
 
 import { describe, expect, it } from 'vitest';
 import { htmlToMarkdown } from '../../src/node/index.js';
@@ -39,7 +46,7 @@ describe('page text that looks like Markdown block syntax stays text', () => {
     ['unclosed fence in a div', '<div>```</div><p>AFTER</p>', '\\```\n\nAFTER'],
     ['fence with a language', '<div>```js<br>alert(1)</div><p>AFTER</p>', '\\```js\nalert(1)\n\nAFTER'],
     ['fence in a <p>', '<p>```</p><p>AFTER</p>', '\\```\n\nAFTER'],
-    ['a list marker after <br> inside an item', '<ul><li>a<br>- b</li></ul>', '- a\n\\- b'],
+    ['a list marker after <br> inside an item', '<ul><li>a<br>- b</li></ul>', '- a\n   \\- b'],
     ['own markup at a line start is not escaped', '<p><b>Bold</b> lead and <a href="/x">link</a></p>', '**Bold** lead and [link](https://example.test/x)'],
   ])('%s', (_label, html, expected) => {
     expect(md(page(html))).toBe(expected);
@@ -135,6 +142,58 @@ describe('fragments', () => {
   });
   it('a fragment that starts with <body> still brings its own', () => {
     expect(md('<body class="x"><div>A</div><p>B</p></body>')).toBe('A\n\nB');
+  });
+});
+
+describe('blocks inside a list item stay in the item', () => {
+  it.each([
+    ['code after the step text', '<ol><li><p>Install:</p><pre><code class="language-bash">npm i x</code></pre></li><li><p>Run:</p></li></ol>',
+      '1. Install:\n\n   ```bash\n   npm i x\n   ```\n\n2. Run:'],
+    ['code as the first child', '<ul><li><pre><code>npm i x</code></pre></li><li>next</li></ul>', '- ```\n  npm i x\n  ```\n\n- next'],
+    ['indented code keeps its indentation', '<ul><li><pre><code>def f():\n    return 1\n\nf()</code></pre></li></ul>',
+      '- ```\n  def f():\n      return 1\n\n  f()\n  ```'],
+    ['a table as the first child', '<ul><li><table><tr><th>a</th></tr><tr><td>1</td></tr></table></li></ul>', '- | a |\n  | --- |\n  | 1 |'],
+    ['a table after text, then more text', '<ul><li>Options:<table><tr><th>a</th></tr><tr><td>1</td></tr></table>after</li></ul>',
+      '- Options:\n\n   | a |\n   | --- |\n   | 1 |\n\n   after'],
+    ['a <dl> as the first child', '<ul><li><dl><dt>Term</dt><dd>Def</dd></dl></li><li>next</li></ul>', '- **Term**\n  : Def\n\n- next'],
+    ['a <div> of paragraphs as the first child', '<ul><li><div><p>one</p><p>two</p></div></li></ul>', '- one\n\n  two'],
+    ['a quote as the first child', '<ul><li><blockquote><p>quoted</p></blockquote></li></ul>', '- > quoted'],
+    ['a nested list as the first child', '<ul><li><ul><li>inner</li></ul></li><li>outer</li></ul>', '- - inner\n- outer'],
+    ['a nested item starting with code is not a setext heading', '<ul><li>parent text<ul><li><pre><code>x = 1</code></pre></li></ul></li></ul>',
+      '- parent text\n   - ```\n     x = 1\n     ```'],
+    ['text after a nested list stays out of its last item', '<ul><li>parent<ul><li>sub</li></ul>after</li></ul>', '- parent\n   - sub\n\n   after'],
+    ['an item without blocks is unchanged', '<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>', '- a\n   - b\n- c'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
+  it('a list nests under step 10 and later', () => {
+    const steps = Array.from({ length: 10 }, (_, i) => `<li>step ${i + 1}<ul><li>sub ${i + 1}</li></ul></li>`).join('');
+    const out = md(page(`<ol>${steps}</ol>`));
+    expect(out).toContain('9. step 9\n   - sub 9\n10. step 10\n    - sub 10');
+  });
+});
+
+describe('link destinations', () => {
+  it.each([
+    ['a ) without its pair is encoded', '<p><a href="https://x.test/a)b">link</a></p>', '[link](https://x.test/a%29b)'],
+    ['a ( without its pair is encoded', '<p><a href="https://x.test/a(b">link</a></p>', '[link](https://x.test/a%28b)'],
+    ['balanced parentheses are left as written', '<p><a href="https://x.test/wiki/Foo_(bar)">wiki</a></p>', '[wiki](https://x.test/wiki/Foo_(bar))'],
+    ['an image source too', '<p><img src="https://x.test/i(1.png" alt="pic"></p>', '![pic](https://x.test/i%281.png)'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
+  it('a block-level link too', () => {
+    expect(md(page('<div><a href="https://x.test/a)b">link</a></div>'))).toBe('[link](https://x.test/a%29b)');
+  });
+});
+
+describe('text after a stray </body> or </html> is kept, as a browser keeps it', () => {
+  it.each([
+    ['after </body>', '<html><body><p>inside</p></body><p>after</p></html>'],
+    ['after </html>', '<html><body><p>inside</p></body></html><p>after</p>'],
+    ['in a fragment', '<p>inside</p></body><p>after</p>'],
+  ])('%s', (_label, html) => {
+    expect(md(html)).toBe('inside\n\nafter');
   });
 });
 

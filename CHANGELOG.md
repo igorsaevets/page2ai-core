@@ -54,6 +54,20 @@ the build before it was fixed, and Markdown claims were checked with a CommonMar
   no longer taken for the page title; a fragment with `<body>` in the middle keeps the text before it.
 - **SSRF guard: link-local is `fe80::/10`.** Only the `fe80:` prefix was blocked, so `fe90::1`
   through `febf::` passed.
+- **Blocks inside a list item stay in the item.** A code block, table, `<dl>`, quote or paragraph
+  group inside an `<li>` started at column 0 after a blank line, which ends the list in CommonMark:
+  the command of every numbered "1. Install:" step left its step and the numbering restarted, an
+  item that starts with a block printed a bare `-` and a blank line (an empty item), list items
+  after a callout became an indented code block, and text above a nested item that starts with a
+  block turned into a `##` heading. Each item now indents what it holds under its marker, a block
+  that opens the item goes on the marker line (`- ```js`), and a list nests under `10.` and later
+  (four spaces). Checked with micromark 4 + GFM: on 7 step-by-step pages (GitHub, Docker,
+  Kubernetes, ArchWiki docs among them) 81 code blocks are back inside their steps and no code
+  text or word changed; of the 14 benchmark pages only python-docs changes (5 code blocks).
+- **Link destinations with an unpaired `(` or `)`** are percent-encoded (`https://x.test/a)b` ended
+  the link after `a`, an image with such a `src` did not render at all); balanced ones such as
+  `/wiki/Foo_(bar)` are left as written.
+- **Text after a stray `</body>` or `</html>` is kept**, as a browser keeps it.
 
 ### Changed
 

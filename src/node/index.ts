@@ -49,7 +49,12 @@ export interface ConversionResult {
 // HTMX-style partial; `<h1>T</h1><p>x</p>` loses even the heading). Plain text or "" gets no
 // documentElement at all and linkedom's own `body` getter throws. Any parse whose root is not
 // <html> is redone inside an html/body shell.
-const parseDocument = (html: string): Document => {
+const parseDocument = (source: string): Document => {
+  // A browser keeps what follows a stray </body> or </html>: HTML parsing reprocesses it in the body
+  // (spec "after body" mode). linkedom leaves it outside the body, where the walk never looks, so
+  // `<body><p>a</p></body><p>b</p>` lost "b" (BL-37). Without the two end tags the body runs to the
+  // end of the input, as in a browser.
+  const html = source.replace(/<\/(?:body|html)\s*>/gi, '');
   const first = parseHTML(html).document as unknown as Document;
   if (first.documentElement?.tagName === 'HTML') return first;
   const inner = html.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
