@@ -65,9 +65,19 @@ the build before it was fixed, and Markdown claims were checked with a CommonMar
   Kubernetes, ArchWiki docs among them) 81 code blocks are back inside their steps and no code
   text or word changed; of the 14 benchmark pages only python-docs changes (5 code blocks).
 - **Link destinations with an unpaired `(` or `)`** are percent-encoded (`https://x.test/a)b` ended
-  the link after `a`, an image with such a `src` did not render at all); balanced ones such as
-  `/wiki/Foo_(bar)` are left as written.
-- **Text after a stray `</body>` or `</html>` is kept**, as a browser keeps it.
+  the link after `a`, an image with such a `src` did not render at all); only the unpaired
+  parenthesis is encoded, so `/wiki/Foo_(bar)` stays as written even with a stray `)` later in the
+  URL. ASCII control characters in a destination that cannot be resolved are encoded too.
+- **Text after a stray `</body>` or `</html>` is kept**, as a browser keeps it: what linkedom leaves
+  beside `<body>` or `<html>` is moved into the body after parsing. The same characters inside a
+  `<title>` or `<xmp>` stay text.
+- **Paragraphs inside a list item stay separate.** `<li><p>A</p><p>B</p></li>` printed `- A` and
+  `   B` with no blank line, which a parser reads as one paragraph "A B"; text before or after a
+  `<p>` in an item was joined the same way. On 21 pages 4 change, by blank lines only.
+- **A rule that opens a bulleted item** printed `- ---`, which is a thematic break, so the item's
+  content left the list; it is written `- ***`. A block after a nested list in the same item (a
+  figure, for one) is separated by a blank line instead of joining that list's last item. Both
+  checked on GitHub's renderer and pandoc.
 
 ### Changed
 

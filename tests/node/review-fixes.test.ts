@@ -17,6 +17,13 @@
 //              nest under `10.`; text before a nested item that starts with a block became `##`
 //   links      a `)` or `(` without its pair ended the link destination early
 //   </body>    text after a stray </body> or </html> was dropped
+//
+// The review of that fix (T111), each output also rendered by GitHub (POST /markdown) and pandoc:
+//   rule       an item opening with a rule printed `- ---`, a thematic break: the item left the list
+//   paragraphs two <p> in one item printed without a blank line, one paragraph to a parser
+//   after list a block after a nested list in the same item joined that list's last item
+//   links      one unpaired `)` encoded every parenthesis; control characters ended the link
+//   </body>    deleting the end tags from the source also deleted them inside <title> and <xmp> text
 
 import { describe, expect, it } from 'vitest';
 import { htmlToMarkdown } from '../../src/node/index.js';
@@ -171,6 +178,23 @@ describe('blocks inside a list item stay in the item', () => {
     const out = md(page(`<ol>${steps}</ol>`));
     expect(out).toContain('9. step 9\n   - sub 9\n10. step 10\n    - sub 10');
   });
+  it.each([
+    ['a rule opening a bulleted item is not a thematic break', '<ul><li><div><hr><p>x</p></div></li><li>next</li></ul>',
+      '- ***\n\n  x\n\n- next'],
+    ['nor in a nested item', '<ul><li><ul><li><div><hr><p>x</p></div></li></ul></li></ul>', '- - ***\n\n    x'],
+    ['an ordered item keeps its dashes', '<ol><li><div><hr><p>x</p></div></li></ol>', '1. ---\n\n   x'],
+    ['two paragraphs stay two', '<ul><li><p>A</p><p>B</p></li></ul>', '- A\n\n   B'],
+    ['text, a paragraph, text', '<ul><li>Lead<p>Para</p>tail</li></ul>', '- Lead\n\n   Para\n\n   tail'],
+    ['paragraphs in a numbered step', '<ol><li><p>one</p><p>two</p></li><li><p>x</p></li></ol>', '1. one\n\n   two\n2. x'],
+    ['a block after a nested list stays out of its last item', '<ul><li><ul><li>a</li></ul><div><p>x</p></div></li></ul>',
+      '- - a\n\n   x'],
+    ['an image figure too', '<ul><li><ul><li>a</li></ul><figure><img src="x.png" alt="i"></figure></li></ul>',
+      '- - a\n\n   ![i](https://example.test/x.png)'],
+    ['an empty item is left out and the numbers stay the page\'s', '<ol><li>Step 1</li><li> </li><li>Step 3</li></ol>',
+      '1. Step 1\n3. Step 3'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
 });
 
 describe('link destinations', () => {
@@ -185,6 +209,20 @@ describe('link destinations', () => {
   it('a block-level link too', () => {
     expect(md(page('<div><a href="https://x.test/a)b">link</a></div>'))).toBe('[link](https://x.test/a%29b)');
   });
+  it.each([
+    ['only the unpaired parenthesis is encoded', '<p><a href="https://x.test/wiki/Foo_(bar)?x=)">t</a></p>',
+      '[t](https://x.test/wiki/Foo_(bar)?x=%29)'],
+    ['a ) before a ( are both unpaired', '<p><a href="https://x.test/a)b(c">t</a></p>', '[t](https://x.test/a%29b%28c)'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
+  it.each([
+    // No baseUrl: the href cannot be resolved, so the URL parser does not encode it first.
+    ['a control character', '<p><a href="a\x01b">t</a></p>', '[t](a%01b)'],
+    ['an emoji before an unpaired parenthesis', '<p><a href="\u{1F600}(a">t</a></p>', '[t](\u{1F600}%28a)'],
+  ])('unresolved: %s', (_label, html, expected) => {
+    expect(htmlToMarkdown(page(html), { includeFrontmatter: false }).markdown.trim()).toBe(expected);
+  });
 });
 
 describe('text after a stray </body> or </html> is kept, as a browser keeps it', () => {
@@ -192,8 +230,17 @@ describe('text after a stray </body> or </html> is kept, as a browser keeps it',
     ['after </body>', '<html><body><p>inside</p></body><p>after</p></html>'],
     ['after </html>', '<html><body><p>inside</p></body></html><p>after</p>'],
     ['in a fragment', '<p>inside</p></body><p>after</p>'],
+    ['in a second <body>', '<html><body><p>inside</p></body><body><p>after</p></body></html>'],
   ])('%s', (_label, html) => {
     expect(md(html)).toBe('inside\n\nafter');
+  });
+  it('an end tag inside <xmp> text stays text', () => {
+    expect(md('<html><body><xmp>x</body>y</xmp><p>after</p></body></html>')).toBe('x</body>y\n\nafter');
+  });
+  it('an end tag inside <title> stays in the title', () => {
+    const r = htmlToMarkdown('<html><head><title>Hello </body> World</title></head><body><p>x</p></body></html>',
+      { baseUrl: 'https://example.test/' });
+    expect(r.title).toBe('Hello </body> World');
   });
 });
 

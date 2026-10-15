@@ -650,37 +650,49 @@ const renderListItem = (
   // The last block ended on a content line (a nested list does): text after it needs a blank line,
   // or it continues that list's last item.
   let openBlock = false;
+  // A <p> is its own paragraph: without a blank line between them, `<li><p>A</p><p>B</p></li>` printed
+  // `- A` / `   B`, one paragraph "A B" to a parser (T110 panel: agy, grok; there before BL-37).
+  let prev: 'text' | 'para' | 'block' | '' = '';
   let run: Node[] = [];
-  const emit = (lines: string[], isBlock: boolean): void => {
+  const emit = (lines: string[], kind: 'text' | 'para' | 'block'): void => {
     let i = 0;
     let indent = cont;
     if (!emittedMarker) {
       while (i < lines.length && !lines[i].trim()) i++;
       if (i === lines.length) return;
-      out.push(`${marker} ${lines[i++]}`);
+      // `- ---` is a thematic break, not an item holding one (CommonMark 4.1: the break wins), so the item and
+      // the text after it left the list. A rule opening a bulleted item is written with stars (T110 panel: grok).
+      const first = lines[i++];
+      out.push(`${marker} ${marker === '-' && /^-{3,}$/.test(first) ? '***' : first}`);
       emittedMarker = true;
-      if (isBlock) indent = exact;
-    } else if (openBlock && !isBlock) {
+      if (kind === 'block') indent = exact;
+    } else if (
+      out[out.length - 1] !== '' && (lines[0] ?? '').trim() !== '' &&
+      (openBlock || kind === 'para' || (kind === 'text' && prev === 'para'))
+    ) {
+      // After a nested list a block needs the blank line too: `- - a` / `   x` made `x` part of item `a`
+      // (T110 panel: mimo).
       out.push('');
     }
     for (; i < lines.length; i++) out.push(lines[i] ? indent + lines[i] : '');
-    openBlock = isBlock && lines[lines.length - 1].trim() !== '';
+    openBlock = kind === 'block' && lines[lines.length - 1].trim() !== '';
+    prev = kind;
   };
-  const emitText = (raw: string): void => {
+  const emitText = (raw: string, kind: 'text' | 'para'): void => {
     // `- 1. x` would be a list inside the item and `- # x` a heading inside it.
-    if (raw) emit(escapeBlockStarts(raw).split('\n'), false);
+    if (raw) emit(escapeBlockStarts(raw).split('\n'), kind);
   };
   const flushInline = (): void => {
     const text = renderInlineNodes(run, opts, capturedPanelEls).trim();
     run = [];
-    emitText(text);
+    emitText(text, 'text');
   };
   for (const node of li.childNodes) {
     if (node.nodeType === 1 /* ELEMENT_NODE */) {
       const c = node as Element;
       if (c.tagName === 'P') {
         flushInline();
-        emitText(renderInline(c, opts, capturedPanelEls).trim());
+        emitText(renderInline(c, opts, capturedPanelEls).trim(), 'para');
         continue;
       }
       if (LI_BLOCK_TAGS.has(c.tagName)) {
@@ -694,7 +706,7 @@ const renderListItem = (
         flushInline();
         const inner: string[] = [];
         renderNodeWithTabs(c, inner, opts, tabGroups, capturedPanelEls, dedupe);
-        emit(inner.join('\n').split('\n'), true);
+        emit(inner.join('\n').split('\n'), 'block');
         continue;
       }
     }
@@ -730,18 +742,23 @@ const escapeBlockStarts = (text: string): string => text.split('\n').map(escapeB
 
 const escapeLinkText = (t: string): string => t.replace(/[\\[\]]/g, '\\$&');
 
-// A link destination may hold parentheses only in balanced pairs, and no spaces or angle brackets
-// (CommonMark 6.3): `https://x.test/a)b` ended the link after `a`, and a relative href that could not
-// be resolved kept its spaces (BL-37). Those characters are percent-encoded; a balanced URL such as
-// `/wiki/Foo_(bar)` is left as written.
+// A link destination may hold parentheses only in balanced pairs, and no spaces, angle brackets or
+// ASCII control characters (CommonMark 6.3): `https://x.test/a)b` ended the link after `a`, and a
+// relative href that could not be resolved kept its spaces (BL-37). Those characters are
+// percent-encoded, so the URL still works when copied out of the Markdown. Only the parentheses that
+// have no partner are encoded: `/wiki/Foo_(bar)?x=)` keeps `Foo_(bar)` as written (T110 panel: grok).
 const mdUrl = (u: string): string => {
-  let open = 0;
-  for (const ch of u) {
-    if (ch === '(') open++;
-    else if (ch === ')' && --open < 0) break;
+  const open: number[] = [];
+  const unpaired = new Set<number>();
+  for (let i = 0; i < u.length; i++) {
+    if (u[i] === '(') open.push(i);
+    else if (u[i] === ')' && open.pop() === undefined) unpaired.add(i);
   }
-  const parens = open === 0 ? u : u.replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29'));
-  return parens.replace(/[\s<>]/g, (c) => encodeURIComponent(c));
+  for (const i of open) unpaired.add(i);
+  const parens = unpaired.size
+    ? u.split('').map((ch, i) => (unpaired.has(i) ? (ch === '(' ? '%28' : '%29') : ch)).join('')
+    : u;
+  return parens.replace(/[\s<>\x00-\x1f\x7f]/g, (c) => encodeURIComponent(c));
 };
 
 // A link's text as Markdown, on one line: rendered inline with only the brackets and backslashes of its

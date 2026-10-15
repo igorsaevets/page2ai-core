@@ -49,22 +49,41 @@ export interface ConversionResult {
 // HTMX-style partial; `<h1>T</h1><p>x</p>` loses even the heading). Plain text or "" gets no
 // documentElement at all and linkedom's own `body` getter throws. Any parse whose root is not
 // <html> is redone inside an html/body shell.
+// A browser keeps what follows a stray </body> or </html>: HTML parsing reprocesses it in the body
+// (spec "after body" modes). linkedom leaves it beside <body> or beside <html>, where the walk never
+// looks, so `<body><p>a</p></body><p>b</p>` lost "b" (BL-37). Those nodes are moved into the body, a
+// second <body> or <html> by its children. T110 deleted the two end tags from the source instead,
+// which also deleted them inside <title>, <xmp> and <plaintext> text (T110 panel: grok, spark, agy).
+const adoptAfterBody = (doc: Document): Document => {
+  const body = doc.body;
+  const root = doc.documentElement;
+  if (!body || !root || body.parentNode !== root) return doc;
+  const strays: Node[] = [];
+  for (let n = body.nextSibling; n; n = n.nextSibling) strays.push(n);
+  for (let n = root.nextSibling; n; n = n.nextSibling) strays.push(n);
+  const adopt = (n: Node): void => {
+    if (n.nodeType === 1 && /^(?:BODY|HTML)$/.test((n as Element).tagName)) {
+      for (const c of [...n.childNodes]) adopt(c);
+      n.parentNode?.removeChild(n);
+    } else if (n.nodeType === 1 || (n.nodeType === 3 && (n.textContent || '').trim())) {
+      body.appendChild(n);
+    }
+  };
+  for (const n of strays) adopt(n);
+  return doc;
+};
+
 const parseDocument = (source: string): Document => {
-  // A browser keeps what follows a stray </body> or </html>: HTML parsing reprocesses it in the body
-  // (spec "after body" mode). linkedom leaves it outside the body, where the walk never looks, so
-  // `<body><p>a</p></body><p>b</p>` lost "b" (BL-37). Without the two end tags the body runs to the
-  // end of the input, as in a browser.
-  const html = source.replace(/<\/(?:body|html)\s*>/gi, '');
-  const first = parseHTML(html).document as unknown as Document;
-  if (first.documentElement?.tagName === 'HTML') return first;
-  const inner = html.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
+  const first = parseHTML(source).document as unknown as Document;
+  if (first.documentElement?.tagName === 'HTML') return adoptAfterBody(first);
+  const inner = source.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
   // Only a fragment that STARTS with <head> or <body> brings its own; one met later is wrapped like any
   // other content. Matching `<body` anywhere left `the <body> tag is required` outside the body, losing
   // "the " (mimo, T109).
   const shell = /^\s*(?:<!--[\s\S]*?-->\s*)*<(?:head|body)[\s>]/i.test(inner)
     ? `<!DOCTYPE html><html>${inner}</html>`
     : `<!DOCTYPE html><html><head></head><body>${inner}</body></html>`;
-  return parseHTML(shell).document as unknown as Document;
+  return adoptAfterBody(parseHTML(shell).document as unknown as Document);
 };
 
 export const htmlToMarkdown = (
