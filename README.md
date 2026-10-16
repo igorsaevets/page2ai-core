@@ -50,6 +50,7 @@ Converts an HTML string to Markdown. Synchronous.
 - `opts.profile` (string) — accepted, but **ignored by the Node build in this version**: `'dashboard'`, `'marketing'` and the rest produce the same output here. The profiles switch the browser extension's live-page pipeline (clicking tabs, waiting for lazy content), which the Node renderer does not run
 - `opts.includeFrontmatter` (boolean) — emit YAML frontmatter block (default: `true`)
 - `opts.includeImages` (boolean) — emit image links (default: `true`)
+- `opts.includeHidden` (boolean) — also convert content under the HTML `hidden` attribute, which a browser does not show (default: `false`). Tab panels, `hidden="until-found"` sections, hidden blocks that hold code and React streaming segments are converted either way
 
 Returns `{ markdown, title, baseUrl, charCount, extractedAt }`. When nothing can be extracted the Markdown says so with `<!-- AI: page has no extractable body content -->` instead of coming back empty.
 

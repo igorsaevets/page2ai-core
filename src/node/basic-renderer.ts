@@ -10,7 +10,7 @@
 
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
-import { absUrl, chooseCodeFence, cleanInline, escapeMd, escapeMdTableCell, longestRun } from '../shared/utils.js';
+import { absUrl, chooseCodeFence, cleanInline, escapeMd, longestRun } from '../shared/utils.js';
 
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
@@ -49,8 +49,13 @@ interface RenderOpts {
   baseUrl: string;
   includeFrontmatter: boolean;
   includeImages: boolean;
+  // Convert content under the `hidden` attribute too (isHiddenEl): the old behaviour, off by default.
+  includeHidden?: boolean;
   // Rendering the text of a link: its text nodes escape `[`, `]` and `\`.
   inLink?: boolean;
+  // Table cells: two adjacent elements get no space of ours (renderInlineNodes), as cells never had one. The space
+  // split Sphinx's `asyncio.` + `FIRST_COMPLETED` into two words on the python-docs corpus page (T115 A/B).
+  tight?: boolean;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -475,7 +480,7 @@ const walkNodes = (
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const c = node as Element;
     // Skipped where they stand, without ending the run: renderNode would drop them anyway.
-    if (SKIP_TAGS.has(c.tagName)) continue;
+    if (SKIP_TAGS.has(c.tagName) || isHiddenEl(c, opts)) continue;
     const phrasing = PHRASING_TAGS.has(c.tagName) || (parentHasText && c.tagName.includes('-'));
     if (phrasing && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
       if (isAriaHidden(c)) continue;
@@ -525,7 +530,7 @@ const renderNode = (
 ): void => {
   const tag = el.tagName;
   if (SKIP_TAGS.has(tag)) return;
-  if (isAriaHidden(el)) return;
+  if (isAriaHidden(el) || isHiddenEl(el, opts)) return;
 
   if (/^H[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1));
@@ -575,7 +580,8 @@ const renderNode = (
   }
 
   if (tag === 'UL' || tag === 'OL') {
-    const items = [...el.children].filter((c) => c.tagName === 'LI');
+    // A hidden item takes no number, as in a browser.
+    const items = [...el.children].filter((c) => c.tagName === 'LI' && !isHiddenEl(c, opts));
     let i = 1;
     for (const li of items) {
       const marker = tag === 'OL' ? `${i}.` : '-';
@@ -586,7 +592,7 @@ const renderNode = (
   }
 
   if (tag === 'TABLE') {
-    renderTable(el as HTMLTableElement, out);
+    renderTable(el, out, opts);
     return;
   }
 
@@ -690,6 +696,7 @@ const renderListItem = (
   for (const node of li.childNodes) {
     if (node.nodeType === 1 /* ELEMENT_NODE */) {
       const c = node as Element;
+      if (isHiddenEl(c, opts)) continue;
       if (c.tagName === 'P') {
         flushInline();
         emitText(renderInline(c, opts, capturedPanelEls).trim(), 'para');
@@ -721,6 +728,23 @@ const renderInline = (el: Element, opts: RenderOpts, excludeEls?: ElementFilter)
   renderInlineNodes([...el.childNodes], opts, excludeEls);
 
 const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
+
+// An element under the `hidden` attribute, whatever its value: a browser renders none of it, and the extension skips
+// it by default (includeHiddenMeaningfulText: false). It used to be converted (P2A-012: a grid's 30 closed details
+// rows came out as table rows), and hidden text is a channel for instructions that the reader of the page never sees.
+// Four kinds stay, each measured on the benchmark corpus: `hidden="until-found"` (a collapsed section the browser's
+// find reveals); tab panels, which are all rendered as the extension clicks every tab (Starlight and Biome hide the
+// inactive ones); a block holding code, which is a code tab the page did not mark up as one (docs.sentry.io keeps
+// its yarn, pnpm, Loader and CDN variants in bare `<div hidden>`s: dropping them lost 5 unique code blocks) or a copy
+// buffer repeating visible code; and React streaming segments: React SSR (Next.js, Mintlify) sends late Suspense
+// content as `<div hidden id="S:0">`, or `<table hidden><tbody id="S:0">` in a table, and a script moves it into place.
+const isHiddenEl = (el: Element, opts: RenderOpts): boolean => {
+  if (opts.includeHidden || !el.hasAttribute('hidden')) return false;
+  if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return false;
+  if (el.getAttribute('role') === 'tabpanel') return false;
+  if (el.tagName === 'PRE' || el.querySelector('pre')) return false;
+  return !(/^S:/.test(el.id) || [...el.children].some((c) => /^S:/.test(c.id)));
+};
 
 // A line of page TEXT that starts with Markdown block syntax becomes that block: `# x` a heading, `> x`
 // a quote, `1. x` a list, `---` a rule, `<div` raw HTML, and an unclosed ``` fence swallows every line
@@ -831,7 +855,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
   const add = (part: string, fromElement: boolean, visible = part, leadPunct = false): void => {
     if (!part) return;
     if (s && !/\s$/.test(s) && !/^\s/.test(part)) {
-      if (fromElement && afterElement && (wordsTouch(lastVisible, visible) || (s.endsWith('*') && part.startsWith('*')))) {
+      if (fromElement && afterElement && ((!opts.tight && wordsTouch(lastVisible, visible)) || (s.endsWith('*') && part.startsWith('*')))) {
         s += ' ';
       } else if ((punctEdge && WORD_START.test(part)) || (leadPunct && WORD_END.test(s))) {
         s += ' ';
@@ -859,9 +883,15 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     const tag = c.tagName;
     // aria-hidden is NOT skipped here, although the block walk skips it: docs.sentry.io puts the whole text
     // of 15 <h2>s inside `<a aria-hidden="true">`, and skipping it deleted every one (T109 A/B). The
-    // attribute hides from screen readers, not from the screen.
-    if (SKIP_TAGS.has(tag)) continue;
+    // attribute hides from screen readers, not from the screen. `hidden` hides from both (isHiddenEl).
+    if (SKIP_TAGS.has(tag) || isHiddenEl(c, opts)) continue;
     if (tag === 'BR') { add('\n', false); continue; }
+    if (tag === 'TABLE') {
+      // In inline position a table is nested in a table cell (the block walk renders every other one): its rows
+      // become lines of the cell instead of rows of the outer table (P2A-013).
+      add(` ${flattenTable(c, opts, excludeEls)} `, true, collapseWs(c.textContent || '').trim());
+      continue;
+    }
     if (tag === 'A') {
       const href = absUrl(c.getAttribute('href') || '', opts.baseUrl);
       const text = linkText(c, opts, href, excludeEls, false);
@@ -923,7 +953,8 @@ const renderDefinitionList = (
   // rest, text 0.1.11 had printed (T109 panel, agy + grok: `<dl><p>Note</p><dt>..` lost "Note").
   const seq: Node[] = [];
   for (const n of dl.childNodes) {
-    if (isGroup(n)) seq.push(...(n as Element).childNodes);
+    if (n.nodeType === 1 && isHiddenEl(n as Element, opts)) continue;
+    if (isGroup(n)) seq.push(...[...(n as Element).childNodes].filter((c) => c.nodeType !== 1 || !isHiddenEl(c as Element, opts)));
     else seq.push(n);
   }
   let lines: string[] = [];
@@ -1043,33 +1074,62 @@ const renderCodeBlock = (pre: Element, out: string[]): void => {
   out.push(fence, '');
 };
 
-// A cell's text as a reader sees it. Raw textContent turned a pretty-printed template's indentation
-// (`<td>\n  value\n</td>`, every Jinja/ERB admin table) into `<br> value<br>`, glued `a<br>b` and two
-// <div> lines into one word, and printed <script>/<svg><title> text (T109, probing the panel's claims).
-const cellText = (el: Element): string => {
-  let s = '';
-  for (const n of el.childNodes) {
-    if (n.nodeType === 3) { s += collapseWs(n.textContent || ''); continue; }
-    if (n.nodeType !== 1) continue;
-    const c = n as Element;
-    if (SKIP_TAGS.has(c.tagName)) continue;
-    if (c.tagName === 'BR') { s += '\n'; continue; }
-    const inner = cellText(c);
-    s += INLINE_BLOCK_GAP.has(c.tagName) ? ` ${inner} ` : inner;
+// The table's own rows and cells. A descendant query also took those of a table nested in a cell: the inner rows came
+// out again as rows of the outer table and the inner cells widened the row holding it (P2A-013: 2 columns became 5).
+// Rows and cells under `hidden`, or inside a hidden row group, are left out (P2A-012).
+const hiddenUpTo = (el: Element, stop: Element, opts: RenderOpts): boolean => {
+  for (let e: Element | null = el; e && e !== stop; e = e.parentElement) if (isHiddenEl(e, opts)) return true;
+  return false;
+};
+const ownRows = (tbl: Element, opts: RenderOpts): Element[] =>
+  [...tbl.querySelectorAll('tr')].filter((tr) => tr.closest('table') === tbl && !hiddenUpTo(tr, tbl, opts));
+const ownCells = (tr: Element, opts: RenderOpts): Element[] =>
+  [...tr.querySelectorAll('th, td')].filter((c) => c.closest('tr') === tr && !hiddenUpTo(c, tr, opts));
+const ownCaption = (tbl: Element, opts: RenderOpts): Element | undefined =>
+  [...tbl.children].find((c) => c.tagName === 'CAPTION' && !isHiddenEl(c, opts));
+
+// A cell as inline Markdown on one line, rendered like any other inline content: links keep their target and code its
+// backticks (P2A-010: every row of a users list lost its link), whitespace collapses as a browser collapses it (a
+// pretty-printed template's indentation used to become `<br> value<br>`), a block child is spaced from its neighbours
+// and a <br> stays a line break (`<br>`). Images stay out of cells, as they always have.
+const cellMd = (el: Element, opts: RenderOpts): string =>
+  renderInline(el, { ...opts, includeImages: false, tight: true })
+    .replace(/ *\n */g, '\n')
+    .replace(/^\n+|\n+$/g, '')
+    .replace(/\|/g, '\\|')
+    .replace(/\n/g, '<br>')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+
+// A table nested in a cell, as lines of that cell: its caption, then one line per row, a header cell joined to the
+// data cell after it by ": " (the key/value tables of a details row read `k: v`) and other cells by " · ".
+const flattenTable = (tbl: Element, opts: RenderOpts, excludeEls?: ElementFilter): string => {
+  const one = (el: Element): string => renderInline(el, opts, excludeEls).replace(/\s+/g, ' ').trim();
+  const cap = ownCaption(tbl, opts);
+  const lines = cap && one(cap) ? [one(cap)] : [];
+  for (const tr of ownRows(tbl, opts)) {
+    let line = '';
+    let afterTh = false;
+    for (const c of ownCells(tr, opts)) {
+      const t = one(c);
+      if (!t) continue;
+      if (line) line += afterTh && c.tagName === 'TD' ? (line.endsWith(':') ? ' ' : ': ') : ' · ';
+      line += t;
+      afterTh = c.tagName === 'TH';
+    }
+    if (line) lines.push(line);
   }
-  return s;
+  return lines.join('\n');
 };
 
-const renderTable = (tbl: HTMLTableElement, out: string[]): void => {
-  const rows = [...tbl.querySelectorAll('tr')];
+const renderTable = (tbl: Element, out: string[], opts: RenderOpts): void => {
+  const rows = ownRows(tbl, opts);
   if (!rows.length) return;
   // <caption> text was never printed (grok, T109): it names the table.
-  const capEl = tbl.querySelector('caption');
-  const caption = capEl ? escapeBlockStart(cleanInline(cellText(capEl))) : '';
+  const capEl = ownCaption(tbl, opts);
+  const caption = capEl ? escapeBlockStart(renderInline(capEl, { ...opts, includeImages: false, tight: true }).replace(/\s+/g, ' ').trim()) : '';
   if (caption) out.push('', caption);
-  const data = rows.map((tr) =>
-    [...tr.querySelectorAll('th, td')].map((c) => escapeMdTableCell(cellText(c).replace(/ *\n */g, '\n').replace(/^\n+|\n+$/g, ''))),
-  );
+  const data = rows.map((tr) => ownCells(tr, opts).map((c) => cellMd(c, opts)));
   const width = Math.max(...data.map((r) => r.length));
   const padded = data.map((r) => { while (r.length < width) r.push(''); return r; });
   out.push('');
