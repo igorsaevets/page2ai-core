@@ -78,8 +78,26 @@ the build before it was fixed, and Markdown claims were checked with a CommonMar
   content left the list; it is written `- ***`. A block after a nested list in the same item (a
   figure, for one) is separated by a blank line instead of joining that list's last item. Both
   checked on GitHub's renderer and pandoc.
+- **A table nested in a cell stays in that cell.** The outer table took every descendant row and
+  cell, so the inner rows came out again as outer rows and the row holding the inner table widened by
+  its cells: a 2-column table became 5 columns, one row printed the inner text twice. The inner table
+  now becomes lines of its cell, `k: v<br>k2: v2` for header/value rows, ` · ` between other cells.
+  A nested table's `<caption>` no longer becomes the outer table's caption.
+- **Table cells keep their links, code and emphasis.** A cell was plain text, so every row of a users
+  list lost its link and API tables lost their code formatting (`flex-<number>` even read as an HTML
+  tag). Cells now render inline Markdown like a paragraph, `|` escaped as `\|`; images stay out of
+  cells and adjacent elements get no added space, as before. On the benchmark corpus 3 pages gain
+  links and code in cells, `f_score` is unchanged.
 
 ### Changed
+
+- **Content under the `hidden` attribute is left out**, as a browser and the extension leave it out
+  (a details-on-demand grid printed all 30 closed detail rows; hidden text is also a way to put
+  instructions in front of a model that the person reading the page never sees). Kept: tab panels,
+  `hidden="until-found"` sections, hidden blocks holding code (unmarked code tabs such as the yarn and
+  pnpm variants on docs.sentry.io), and React streaming segments (`<div hidden id="S:0">`). A hidden
+  list item takes no number. `includeHidden: true` restores the old behaviour. On the 21-page corpus
+  no page changes from this rule.
 
 - `<select>`, `<datalist>`, `<textarea>`, `<iframe>`, `<object>`, `<embed>`, `<audio>` and
   `<video>` are skipped: option lists and "your browser does not support" fallbacks are not page

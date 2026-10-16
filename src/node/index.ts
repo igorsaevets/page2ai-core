@@ -25,6 +25,8 @@ export interface HtmlToMarkdownOptions {
   profile?: ProfileName | 'auto';
   includeFrontmatter?: boolean;
   includeImages?: boolean;
+  // Also convert content under the HTML `hidden` attribute, which a browser does not show (default: false).
+  includeHidden?: boolean;
 }
 
 export interface FetchAndConvertOptions extends HtmlToMarkdownOptions {
@@ -99,6 +101,7 @@ export const htmlToMarkdown = (
       baseUrl: adapter.baseUrl(),
       includeFrontmatter: opts.includeFrontmatter ?? true,
       includeImages: opts.includeImages ?? true,
+      includeHidden: opts.includeHidden ?? false,
     });
     return {
       markdown,
