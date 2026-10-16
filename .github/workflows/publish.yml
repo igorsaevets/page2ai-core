@@ -5,10 +5,22 @@ name: Publish to npm (with provenance)
 #
 # Authentication is npm trusted publishing (OIDC): the registry trusts this
 # workflow file of this repository for @page2ai/core, so no npm token is stored
-# anywhere. The trust lives on npmjs.com (`npm trust github`), and a NEW trust
-# configuration expires unless a publish validates it within 2 days
-# (docs.npmjs.com/trusted-publishers). Dispatching this workflow with
-# oidc_probe=true checks that the registry accepts it and publishes nothing.
+# anywhere. The trust lives on npmjs.com (`npm trust github`) and names this
+# file, so the file must stay publish.yml. A NEW trust configuration expires
+# unless a publish validates it within 2 days (docs.npmjs.com/trusted-publishers).
+#
+# The trust names the file, not a job: ANY job of this file that holds
+# id-token: write can trade its OIDC token for an npm publish token. So the work
+# is split (BACKLOG BL-33):
+#   build   - npm ci, type-check, test, build, npm pack. No id-token, so nothing
+#             it runs (dependency code, test tooling) can publish.
+#   publish - the only job with id-token: write. It checks the tarball the build
+#             job handed over and runs `npm publish <tarball>`: no checkout, no
+#             npm ci, no script of this package.
+#   verify  - reads the release back from the registry. No id-token.
+# Dispatching with oidc_probe=true runs the same jobs, but publish is a dry run
+# (npm still does the real OIDC exchange, so it proves the registry accepts this
+# file) and verify reads the version that is already live. Nothing is uploaded.
 on:
   push:
     tags: ['v*']
@@ -19,40 +31,139 @@ on:
         type: boolean
         default: false
 
+# Nothing is granted by default; each job names what it needs.
+permissions: {}
+
+# Two runs for the same ref never publish at once, and a publish is never
+# cancelled halfway.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 # GitHub's implicit shell for `run:` is `bash -e {0}` -- `-e` is on, `pipefail` is
 # NOT. So `X=$(cmd | head -n 1)` succeeds with X empty when `cmd` fails, because
 # `head` is the last command in the pipe. Naming the shell explicitly gets
 # `bash --noprofile --norc -eo pipefail {0}`, which fails the step instead.
+# The flip side: never `producer | grep -q`, because grep quits at the first
+# match, the producer dies of SIGPIPE and the pipe reports failure.
 defaults:
   run:
     shell: bash
 
 jobs:
-  publish:
-    name: Build, test and publish
-    if: ${{ !inputs.oidc_probe }}
+  build:
+    name: Build, test and pack (cannot publish)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     permissions:
-      contents: read
+      contents: read # checkout
+
+    outputs:
+      name: ${{ steps.pack.outputs.name }}
+      version: ${{ steps.pack.outputs.version }}
+      file: ${{ steps.pack.outputs.file }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+
+    steps:
+      - name: Publish only from a v* tag
+        # A dispatch runs on whatever ref it names, and the npm trust does not
+        # look at the ref. A branch may only run the probe.
+        if: ${{ !inputs.oidc_probe && !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "::error::a real publish runs only from a v* tag; to test a branch, dispatch with oidc_probe=true"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          # No dependency cache in a release build, as npm's trusted publishing
+          # guide says: whatever is restored here ends up in the tarball.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        # No dependency runs an install script here. The lock has one
+        # (fsevents, macOS only, never installed on Linux), so nothing is lost,
+        # and a dependency that adds one in a later version cannot run it.
+        run: npm ci --ignore-scripts
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify the tag matches package.json
+        # A tag that disagrees with the manifest publishes a version nobody
+        # asked for and cannot be undone; npm forbids re-publishing a version.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag v$TAG does not match package.json $PKG"
+            exit 1
+          fi
+          echo "publishing $PKG"
+
+      - name: Pack
+        id: pack
+        # npm pack runs no script of this package (it has no prepack, prepare or
+        # postpack), so the tarball holds exactly the dist/ built and tested
+        # above. Its integrity travels with it to the publish and verify jobs.
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --json --pack-destination "$RUNNER_TEMP/pack" >"$RUNNER_TEMP/pack.json"
+          node -e '
+            const [p] = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            console.log(`name=${p.name}\nversion=${p.version}\nfile=${p.filename}\nintegrity=${p.integrity}`);
+          ' "$RUNNER_TEMP/pack.json" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Hand the tarball to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/pack/*.tgz
+          if-no-files-found: error
+          # "Re-run all jobs" uploads the same name again.
+          overwrite: true
+
+  publish:
+    name: Publish the tarball (the only job that can publish)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
       # Trusted publishing: npm exchanges this job's OIDC token for a
       # short-lived publish token, and Sigstore signs the provenance
       # attestation with the same identity. Without it the publish fails with
       # ENEEDAUTH, because there is no stored token to fall back on.
-      id-token: write
+      id-token: write # npm trusted publishing + Sigstore provenance
+
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+
+    env:
+      NAME: ${{ needs.build.outputs.name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      FILE: ${{ needs.build.outputs.file }}
+      INTEGRITY: ${{ needs.build.outputs.integrity }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
       - name: Setup Node.js 24 LTS
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          # No dependency cache in a release build, as npm's trusted publishing
-          # guide says: whatever is restored into this job runs with the right
-          # to publish.
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
 
@@ -68,98 +179,166 @@ jobs:
           fi
           echo "npm $V supports trusted publishing"
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Download the tarball the build job packed
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/release
 
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Verify the tag matches package.json
-        # A tag that disagrees with the manifest publishes a version nobody
-        # asked for and cannot be undone; npm forbids re-publishing a version.
+      - name: Check the tarball
+        # Nothing is published that the build job did not pack: the bytes match
+        # its integrity, the manifest inside names this package and version, and
+        # nothing in it runs at install time on a user's machine (the way npm
+        # worms spread). The last check holds even if the build job was hijacked.
+        working-directory: ${{ runner.temp }}/release
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "tag v$TAG does not match package.json $PKG"
-            exit 1
-          fi
-          echo "publishing $PKG"
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$NAME" = "@page2ai/core" ] || fail "the build job packed '$NAME', not @page2ai/core"
+          [[ "$FILE" =~ ^[A-Za-z0-9._-]+\.tgz$ ]] && [ -f "$FILE" ] || fail "no tarball named '$FILE' was handed over"
+          GOT="sha512-$(openssl dgst -sha512 -binary "$FILE" | base64 -w0)"
+          [ "$GOT" = "$INTEGRITY" ] || fail "$FILE is $GOT, but the build job packed $INTEGRITY"
+          tar -xzOf "$FILE" package/package.json >"$RUNNER_TEMP/manifest.json"
+          jq -e --arg n "$NAME" --arg v "$VERSION" '.name == $n and .version == $v' "$RUNNER_TEMP/manifest.json" >/dev/null \
+            || fail "the manifest inside $FILE is not $NAME@$VERSION"
+          HOOKS="$(jq -r '(.scripts // {}) | keys[] | select(. == "preinstall" or . == "install" or . == "postinstall")' "$RUNNER_TEMP/manifest.json")"
+          [ -z "$HOOKS" ] || fail "$FILE declares install-time scripts: $HOOKS"
+          tar -tzf "$FILE" >"$RUNNER_TEMP/files.txt"
+          ! grep -qx 'package/binding.gyp' "$RUNNER_TEMP/files.txt" || fail "$FILE has a binding.gyp, which npm builds at install time"
+          echo "$NAME@$VERSION: $FILE, $(wc -l <"$RUNNER_TEMP/files.txt") files, $INTEGRITY"
 
       - name: Publish
-        # Authenticates through trusted publishing. Provenance is automatic
-        # there; --provenance only makes it explicit.
-        run: npm publish --provenance --access public
-
-      - name: Verify the release went through trusted publishing
-        # The registry records GitHub Actions (npm-oidc-no-reply@github.com) as
-        # the publisher of a version published over OIDC, and the account owner
-        # for a token publish. This keeps "no stored token" checked on every
-        # release instead of assumed.
+        # Authenticates through trusted publishing; provenance is automatic
+        # there, --provenance only makes it explicit. A tarball runs no
+        # lifecycle script (npm runs them for a directory publish only), and
+        # --ignore-scripts says so. A version already on the registry (a re-run
+        # after a later step failed) is left alone.
+        id: publish
+        if: ${{ !inputs.oidc_probe }}
+        working-directory: ${{ runner.temp }}/release
         run: |
-          V="$(node -p "require('./package.json').version")"
-          U=""
-          # With --json, a version the registry cannot see yet prints an E404
-          # JSON body and exits 1, so success is the exit code, not the output.
-          for _ in 1 2 3 4 5 6; do
-            if U="$(npm view "@page2ai/core@$V" _npmUser --json 2>/dev/null)"; then break; fi
-            U=""
-            sleep 10
-          done
-          case "$U" in
-            *npm-oidc-no-reply@github.com*) echo "@page2ai/core@$V was published by trusted publishing" ;;
-            "") echo "::warning::@page2ai/core@$V is not visible on the registry yet; check its publisher later" ;;
-            *) echo "::error::@page2ai/core@$V was not published by trusted publishing: $U"; exit 1 ;;
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/${NAME/\//%2f}/$VERSION")"
+          case "$CODE" in
+            200) echo "$NAME@$VERSION is already on the registry; nothing to publish" ;;
+            404) npm publish "./$FILE" --provenance --access public --ignore-scripts
+                 echo "published=true" >>"$GITHUB_OUTPUT" ;;
+            *)   echo "::error::the registry answered HTTP $CODE for $NAME@$VERSION; not publishing blind"; exit 1 ;;
           esac
-
-      - name: Verify the attestation is live
-        # npm audit signatures checks the published tarball against the registry's
-        # signatures and attestations. Running it here means a publish that
-        # silently lost its provenance fails the workflow instead of looking fine.
-        run: |
-          sleep 20
-          npm audit signatures || echo "attestation not visible yet; check the package page"
-
-  oidc-probe:
-    name: Check trusted publishing (publishes nothing)
-    if: ${{ inputs.oidc_probe }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js 24 LTS
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Ask the registry for a publish token (dry run)
         # npm publish runs its OIDC exchange before it looks at --dry-run, so a
-        # dry run proves the registry accepts this workflow for the package and
+        # dry run proves the registry accepts this job for the package and
         # uploads nothing; npm never prints the short-lived token it gets back.
         # npm still exits 1 when this version is already published, so the
         # verdict comes from npm's own log line, not from its exit code.
+        if: ${{ inputs.oidc_probe }}
+        working-directory: ${{ runner.temp }}/release
         run: |
           LOG="$RUNNER_TEMP/oidc-probe.log"
-          npm publish --dry-run --ignore-scripts --loglevel verbose >"$LOG" 2>&1 || true
+          npm publish "./$FILE" --dry-run --ignore-scripts --loglevel verbose >"$LOG" 2>&1 || true
           if grep -q 'oidc Successfully retrieved and set token' "$LOG"; then
-            echo "@page2ai/core: trusted publishing accepts this workflow"
+            echo "$NAME: trusted publishing accepts the publish job of this workflow"
           else
             WHY="$(grep -m1 'verbose oidc' "$LOG" || echo 'npm logged no OIDC step')"
-            echo "::error::@page2ai/core: trusted publishing does not accept this workflow: $WHY"
+            echo "::error::$NAME: trusted publishing does not accept this workflow: $WHY"
             exit 1
           fi
+
+  verify:
+    name: Read the release back from the registry (cannot publish)
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    permissions: {}
+
+    env:
+      NAME: ${{ needs.build.outputs.name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      INTEGRITY: ${{ needs.build.outputs.integrity }}
+      PUBLISHED: ${{ needs.publish.outputs.published }}
+      PROBE: ${{ inputs.oidc_probe }}
+
+    steps:
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Publisher, provenance and bytes, from the per-version document
+        # In the T105 release `npm view` missed two fresh versions for over a
+        # minute while the per-version document already served them, so this
+        # reads that document and gives it up to 10 minutes. A probe reads the
+        # version that is already live, if there is one.
+        id: doc
+        run: |
+          URL="https://registry.npmjs.org/${NAME/\//%2f}/$VERSION"
+          DOC="$RUNNER_TEMP/version.json"
+          TRIES=60
+          if [ "$PROBE" = true ]; then TRIES=1; fi
+          for i in $(seq 1 "$TRIES"); do
+            if curl -sf -o "$DOC" "$URL"; then break; fi
+            rm -f "$DOC"
+            if [ "$i" -lt "$TRIES" ]; then sleep $((5 + RANDOM % 6)); fi
+          done
+          if [ ! -s "$DOC" ]; then
+            if [ "$PROBE" = true ]; then
+              echo "::notice::$NAME@$VERSION is not on the registry, so the probe has nothing to read back"
+              echo "live=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$NAME@$VERSION is still not on the registry about 10 minutes after the publish"
+            exit 1
+          fi
+          echo "live=true" >>"$GITHUB_OUTPUT"
+          jq -c '{_npmUser, integrity: .dist.integrity, provenance: .dist.attestations.provenance.predicateType}' "$DOC"
+          FAIL=0
+          if ! jq -e '._npmUser.email == "npm-oidc-no-reply@github.com" and ._npmUser.trustedPublisher.id == "github"' "$DOC" >/dev/null; then
+            echo "::error::$NAME@$VERSION was not published by trusted publishing"; FAIL=1
+          fi
+          if ! jq -e '.dist.attestations.provenance.predicateType == "https://slsa.dev/provenance/v1"' "$DOC" >/dev/null; then
+            echo "::error::$NAME@$VERSION carries no SLSA provenance"; FAIL=1
+          fi
+          LIVE="$(jq -r '.dist.integrity' "$DOC")"
+          if [ "$LIVE" = "$INTEGRITY" ]; then
+            echo "$NAME@$VERSION on the registry is byte-identical to the tarball this run packed"
+          elif [ "$PUBLISHED" = true ]; then
+            echo "::error::$NAME@$VERSION on the registry is $LIVE, but this run packed and published $INTEGRITY"; FAIL=1
+          else
+            echo "::notice::$NAME@$VERSION was published before this run and differs from this build ($LIVE, this run packed $INTEGRITY)"
+          fi
+          exit "$FAIL"
+
+      - name: Signature and attestation, verified by npm
+        # npm audit signatures checks the registry signature of every package it
+        # installed and the Sigstore bundle of every attestation, and exits 1 on
+        # an invalid or missing one. A scratch install of exactly this version,
+        # because the repository's own node_modules never contains it. Fresh
+        # versions can be missing from what `npm install` resolves for a few
+        # minutes, hence the retries.
+        if: steps.doc.outputs.live == 'true'
+        run: |
+          mkdir "$RUNNER_TEMP/audit"
+          cd "$RUNNER_TEMP/audit"
+          npm init -y >/dev/null
+          TRIES=60
+          if [ "$PROBE" = true ]; then TRIES=3; fi
+          for i in $(seq 1 "$TRIES"); do
+            if npm install --ignore-scripts --no-audit --no-fund "$NAME@$VERSION" >/dev/null 2>"$RUNNER_TEMP/install.err"; then break; fi
+            if [ "$i" -eq "$TRIES" ]; then
+              cat "$RUNNER_TEMP/install.err"
+              echo "::error::npm cannot install $NAME@$VERSION"
+              exit 1
+            fi
+            sleep $((5 + RANDOM % 6))
+          done
+          if ! npm audit signatures --json --include-attestations >"$RUNNER_TEMP/audit.json"; then
+            jq -c '{invalid, missing}' "$RUNNER_TEMP/audit.json" || cat "$RUNNER_TEMP/audit.json"
+            echo "::error::npm audit signatures failed for the install of $NAME@$VERSION"
+            exit 1
+          fi
+          if ! jq -e --arg n "$NAME" --arg v "$VERSION" 'any((.verified // [])[]; .name == $n and .version == $v)' "$RUNNER_TEMP/audit.json" >/dev/null; then
+            echo "::error::npm verified no attestation for $NAME@$VERSION"
+            exit 1
+          fi
+          echo "$NAME@$VERSION: registry signature and provenance attestation verified by npm audit signatures"
