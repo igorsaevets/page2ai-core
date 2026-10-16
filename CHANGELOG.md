@@ -2,13 +2,16 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.1.12 - 2026-10-16
 
 Output changes on most pages; the extension, the MCP server and the benchmark numbers move with it.
-On the 14-page benchmark corpus no word, code fence, table row, heading or list item of the 0.1.11
-output is lost, `f_score` stays 0.916, and 9 pages gain text that 0.1.11 dropped. A six-model
-review of that change found the defects listed after the first five entries; each was reproduced on
-the build before it was fixed, and Markdown claims were checked with a CommonMark parser.
+On the 14-page benchmark corpus `f_score` stays 0.916 and no code block, table or heading of the
+0.1.11 output is lost. The words that go are `<br>` markup 0.1.11 left in table cells; the one list
+item that goes (MDN) was a `*` in the page's text, now escaped. On 7 more pages the other words that
+go are CSS from `<style>` elements inside Wikipedia's table cells and letter-spaced text now joined
+into its word (`a d v e r t i s e m e n t s`). A six-model review of the first change found the
+defects listed after the first five entries; each was reproduced on the build before it was fixed,
+and Markdown claims were checked with a CommonMark parser.
 
 ### Fixed
 
@@ -98,6 +101,13 @@ the build before it was fixed, and Markdown claims were checked with a CommonMar
   pnpm variants on docs.sentry.io), and React streaming segments (`<div hidden id="S:0">`). A hidden
   list item takes no number. `includeHidden: true` restores the old behaviour. On the 21-page corpus
   no page changes from this rule.
+
+- **Two changes a downstream Markdown renderer can show.** A code block inside a list item now stays
+  in the item, indented under it; Python-Markdown (MkDocs without SuperFences) renders such a fence
+  as inline code, because its `fenced_code` extension works only at the document root (0.1.11 put
+  the fence outside the list). An `<li>` whose only block renders empty is left out instead of
+  printed as an empty item, so a renderer numbers the items after it one lower; the Markdown keeps
+  the source numbers.
 
 - `<select>`, `<datalist>`, `<textarea>`, `<iframe>`, `<object>`, `<embed>`, `<audio>` and
   `<video>` are skipped: option lists and "your browser does not support" fallbacks are not page

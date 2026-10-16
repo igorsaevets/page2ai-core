@@ -9,7 +9,7 @@ import type { ExtractorConfig } from './types.js';
 // in @page2ai/mcp, caught T51) — never add another literal. This copy itself drifted at 0.1.9
 // (frontmatter said 0.1.8 in live ChatGPT output); tests/shared/version-sync.test.ts now fails
 // the suite whenever the two copies disagree.
-export const CORE_VERSION = '0.1.11';
+export const CORE_VERSION = '0.1.12';
 
 // Indent constant: 3 spaces for CommonMark-compatible nested lists.
 export const INDENT = '   ';
