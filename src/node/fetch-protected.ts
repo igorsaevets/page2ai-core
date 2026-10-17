@@ -7,6 +7,10 @@
 // - Response size cap (default 10MB) — abort if body exceeds
 // - Strips UTF-8 BOM from response text
 // - Basic content-type guard: only text/html, text/markdown, text/plain accepted
+// - The Accept header asks for the HTML page and never for Markdown: docs platforms that
+//   negotiate (Fumadocs, Mintlify, Vercel, Supabase) would answer their own Markdown copy,
+//   which can be older than the page (BL-49). A URL that is itself a Markdown file is still
+//   served as one, through `*/*`, and the content-type guard still accepts it.
 //
 // KNOWN LIMITATION (v0.1): no charset detection for non-UTF-8 pages (Windows-1251
 // docs will mojibake). Planned for v0.2 via `fetch-charset-detection`.
@@ -69,7 +73,7 @@ export const fetchProtected = async (
         signal: controller.signal,
         headers: {
           'user-agent': ua,
-          accept: 'text/html,text/markdown,text/plain,application/xhtml+xml,*/*;q=0.5',
+          accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
         },
         redirect: 'manual',
       });
