@@ -33,7 +33,6 @@ export interface FetchAndConvertOptions extends HtmlToMarkdownOptions {
   timeoutMs?: number;
   maxBytes?: number;
   userAgent?: string;
-  tryMdSuffixFirst?: boolean;   // Mintlify/etc. convention: URL.md returns clean md
 }
 
 export interface ConversionResult {
@@ -42,7 +41,8 @@ export interface ConversionResult {
   baseUrl: string;
   charCount: number;
   extractedAt: string;
-  source: 'html-parse' | 'md-suffix' | 'content-negotiation' | 'llms-txt';
+  // 'markdown-response': the URL itself answered Markdown (a .md file), returned as is.
+  source: 'html-parse' | 'markdown-response';
 }
 
 // linkedom builds the document of a FRAGMENT around its first element: `<style>..</style><div>..`
@@ -280,15 +280,9 @@ export const htmlToMarkdown = (
 };
 
 // Wrap a raw markdown response in the frontmatter block so downstream consumers
-// see the same shape as html-to-md output. `via` records which channel produced
-// it, because a caller measuring conversion quality needs to know that no
-// conversion happened.
-const wrapMdWithFrontmatter = (
-  raw: string,
-  url: string,
-  title: string,
-  via: 'md-suffix' | 'content-negotiation',
-): string => {
+// see the same shape as html-to-md output. `extractor_source` says that no
+// conversion happened, because a caller measuring conversion quality needs to know.
+const wrapMdWithFrontmatter = (raw: string, url: string, title: string): string => {
   const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
   const fm = [
     '---',
@@ -297,26 +291,25 @@ const wrapMdWithFrontmatter = (
     `captured_at: ${yq(new Date().toISOString())}`,
     `extractor: ${yq('page2ai-core')}`,
     `extractor_version: ${yq(CORE_VERSION)}`,
-    `extractor_source: ${yq(via)}`,
+    `extractor_source: ${yq('markdown-response')}`,
     '---',
     '',
   ];
   return fm.join('\n') + raw.replace(/^﻿/, '').trim() + '\n';
 };
 
-// The two Markdown fast paths below honour includeFrontmatter and count characters the way
-// htmlToMarkdown does (the whole returned Markdown). Until 0.1.12 they always prepended the
-// frontmatter and counted only the body, so `include_frontmatter: false` in the MCP server was
-// ignored on every docs site that answers text/markdown (T121 panel, codex).
+// The Markdown path honours includeFrontmatter and counts characters the way htmlToMarkdown
+// does (the whole returned Markdown). Until 0.1.12 it always prepended the frontmatter and
+// counted only the body, so `include_frontmatter: false` in the MCP server was ignored
+// (T121 panel, codex).
 const mdResponseMarkdown = (
   raw: string,
   url: string,
   title: string,
-  via: 'md-suffix' | 'content-negotiation',
   opts: FetchAndConvertOptions,
 ): string =>
   (opts.includeFrontmatter ?? true)
-    ? wrapMdWithFrontmatter(raw, url, title, via)
+    ? wrapMdWithFrontmatter(raw, url, title)
     : raw.replace(/^﻿/, '').trim() + '\n';
 
 // A Markdown body must never reach the HTML parser. linkedom will happily accept
@@ -327,72 +320,33 @@ const MARKDOWN_CONTENT_TYPE = /^(text\/markdown|text\/x-markdown)/i;
 
 const looksLikeHtml = (s: string): boolean => /^\s*<(!doctype|html)\b/i.test(s);
 
-// Attempt the URL.md convention (Mintlify, Anthropic docs, some others).
-// Returns null if not applicable or on any failure — callers fall back to HTML.
-const tryMdSuffix = async (
-  originalUrl: string,
-  opts: FetchAndConvertOptions,
-): Promise<ConversionResult | null> => {
-  const url = originalUrl.replace(/[#?].*$/, '');
-  if (url.endsWith('.md') || url.endsWith('.txt')) return null;
-  const candidate = url.endsWith('/') ? `${url}index.md` : `${url}.md`;
-  try {
-    const resp = await fetchProtected(candidate, {
-      timeoutMs: opts.timeoutMs,
-      maxBytes: opts.maxBytes ?? 500 * 1024,   // markdown pages should be small
-      userAgent: opts.userAgent,
-      acceptContentTypes: /^(text\/markdown|text\/plain|application\/octet-stream)/i,
-    });
-    if (!resp.text || resp.text.length < 32) return null;
-    // Cheap sanity: markdown response should not look like HTML
-    if (looksLikeHtml(resp.text)) return null;
-    const title = (resp.text.match(/^#\s+(.+)$/m)?.[1] || '').trim();
-    const markdown = mdResponseMarkdown(resp.text, resp.finalUrl, title, 'md-suffix', opts);
-    return {
-      markdown,
-      title,
-      baseUrl: resp.finalUrl,
-      charCount: markdown.length,
-      extractedAt: new Date().toISOString(),
-      source: 'md-suffix',
-    };
-  } catch {
-    return null;
-  }
-};
-
 export const fetchAndConvert = async (
   url: string,
   opts: FetchAndConvertOptions = {},
 ): Promise<ConversionResult> => {
   assertSafeUrl(url);
-  const tryMd = opts.tryMdSuffixFirst ?? true;
-  if (tryMd) {
-    const mdResult = await tryMdSuffix(url, opts);
-    if (mdResult) return mdResult;
-  }
+  // Only the URL the caller named is fetched: no `<url>.md` twin, no llms.txt, and the Accept
+  // header does not ask for Markdown (BL-49, Igor 2026-10-17: such copies are often stale).
   const resp = await fetchProtected(url, {
     timeoutMs: opts.timeoutMs,
     maxBytes: opts.maxBytes,
     userAgent: opts.userAgent,
   });
 
-  // The Accept header above lists text/markdown, and a growing number of
-  // documentation platforms honour it: Fumadocs, Mintlify, Vercel and Supabase
-  // all answer `content-type: text/markdown` with the page already converted.
-  // Handing that to the HTML parser produces an empty document. Return it as-is
-  // and say which channel it came from.
+  // A URL that is itself Markdown (a .md file) answers text/markdown although the Accept
+  // header asks for HTML first: that file is the page. Handing it to the HTML parser would
+  // produce an empty document, so it is returned as is and labelled.
   if (MARKDOWN_CONTENT_TYPE.test(resp.contentType) && !looksLikeHtml(resp.text)) {
     const raw = resp.text.replace(/^﻿/, '').trim();
     const title = (raw.match(/^#\s+(.+)$/m)?.[1] || '').trim();
-    const markdown = mdResponseMarkdown(raw, resp.finalUrl, title, 'content-negotiation', opts);
+    const markdown = mdResponseMarkdown(raw, resp.finalUrl, title, opts);
     return {
       markdown,
       title,
       baseUrl: resp.finalUrl,
       charCount: markdown.length,
       extractedAt: new Date().toISOString(),
-      source: 'content-negotiation',
+      source: 'markdown-response',
     };
   }
 

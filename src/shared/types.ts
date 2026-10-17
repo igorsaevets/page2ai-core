@@ -14,11 +14,6 @@ export type InteractionMode = 'none' | 'safe-tabs-and-details' | 'aggressive';
 export type LazyLoadMode = 'none' | 'safe' | 'full';
 export type TabPanelStrategy = 'safe' | 'balanced' | 'aggressive';
 export type VisualMarkersMode = 'none' | 'important-only' | 'all';
-export type OfficialMarkdownMode =
-  | 'never'
-  | 'always'
-  | 'page-specific'
-  | 'trusted-docs-only';
 export type StructuredDataPosition = 'never-emit' | 'before-content' | 'after-content';
 export type OutputMode = 'clean' | 'debug';
 
@@ -38,9 +33,6 @@ export interface ExtractorConfig {
   minLargeFontPx: number;
   minBoldWeight: number;
   outputMode: OutputMode;
-  officialMarkdownMode: OfficialMarkdownMode;
-  trustedOfficialMarkdownHosts: string[];
-  officialMarkdownMinRatio: number;
   extractJsonLd: boolean;
   extractOpenGraph: boolean;
   extractMicrodata: boolean;
@@ -282,11 +274,6 @@ export interface SrcResolution {
   candidates: string[];
 }
 
-export interface OfficialMarkdownResult {
-  url: string;
-  markdown: string;
-}
-
 export type QualityRatioStatus = 'OK' | 'UNDER-EXTRACTED' | 'OVER-EXTRACTED-NOISE';
 
 export interface QualityReport {
@@ -306,15 +293,13 @@ export interface QualityReport {
   codeGroupTablists: number;
 }
 
-export type ExtractStatus = 'ok' | 'official-md' | 'fallback-after-crash';
+export type ExtractStatus = 'ok' | 'fallback-after-crash';
 
 export interface ExtractResult {
   status: ExtractStatus;
   markdown: string;
   filename: string;
   profile: ProfileName;
-  officialMarkdownUrl?: string;
-  officialMarkdownRatio?: number;
   quality?: QualityReport;
   tabsCaptured: number;
   dropdownsCaptured: number;
