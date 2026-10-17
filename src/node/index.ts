@@ -75,6 +75,80 @@ const adoptAfterBody = (doc: Document): Document => {
   return doc;
 };
 
+// React streaming SSR (Fizz: Next.js App Router, Remix, Mintlify) sends the shell first, with a Suspense fallback
+// where late content goes, `<!--$?--><template id="B:0"></template>fallback<!--/$-->`, and the content later, at the
+// end of <body>: `<div hidden id="S:0">` and `<script>$RC("B:0","S:0")</script>`, which moves it into the boundary in
+// place of the fallback. With no script run, the article stayed hidden beside <main> and the root printed the shell
+// (the benchmark's docs.anthropic.com page: 212 characters of "Loading..." for a 12,270-character article, BL-39; 7 of
+// 16 fresh Next.js / Mintlify / Remix pages stream, T126). So the calls are replayed in document order, as a browser
+// runs them: $RC, and $RR (the same once stylesheets load), fill a boundary; $RS moves a segment onto its
+// `<template id="P:1">` placeholder; $RX (client rendering) keeps the fallback. A call is followed only on the markup
+// React writes for it, a hidden segment and a pending boundary closed by its own comment, so a page that merely
+// mentions `$RC(` moves nothing. Chromium running only a page's inline scripts gave the converter the same page
+// (8 of 8 pages, T126). Ids as React prints them: an optional identifierPrefix, then B:, S: or P: and hex.
+const FILL_BOUNDARY = /\$R[CR]\("([^"\\]*B:[0-9a-f]+)","([^"\\]*S:[0-9a-f]+)"/;
+const FILL_PLACEHOLDER = /\$RS\("([^"\\]*S:[0-9a-f]+)","([^"\\]*P:[0-9a-f]+)"/;
+const STREAM_CALL = new RegExp(`${FILL_BOUNDARY.source}|${FILL_PLACEHOLDER.source}`, 'g');
+const BOUNDARY_PENDING = /^\$[?~]$/; // `$~` = queued by React 19.2's batched reveal
+const BOUNDARY_START = /^(?:\$[?~!]?|&)$/; // `&` = an <Activity> boundary
+
+const isSegment = (el: Element | null): el is Element =>
+  !!el && (el.hasAttribute('hidden') || !!el.closest('table')?.hasAttribute('hidden'));
+
+const fillBoundary = (doc: Document, boundaryId: string, segmentId: string): void => {
+  const segment = doc.getElementById(segmentId);
+  if (!isSegment(segment)) return;
+  const marker = doc.getElementById(boundaryId);
+  if (!marker) {
+    segment.remove(); // React's $RC drops a segment whose boundary is gone: the browser never shows it
+    return;
+  }
+  const open = marker.previousSibling;
+  if (marker.tagName !== 'TEMPLATE' || open?.nodeType !== 8 || !BOUNDARY_PENDING.test((open as Comment).data)) return;
+  const parent = marker.parentNode;
+  if (!parent || segment.contains(marker)) return;
+  let close = marker.nextSibling;
+  for (let depth = 0; close; close = close.nextSibling) {
+    if (close.nodeType !== 8) continue;
+    const data = (close as Comment).data;
+    if (data === '/$' || data === '/&') {
+      if (!depth) break;
+      depth--;
+    } else if (BOUNDARY_START.test(data)) depth++;
+  }
+  if (!close) return;
+  segment.remove();
+  for (let n: ChildNode | null = marker; n && n !== close; ) {
+    const next: ChildNode | null = n.nextSibling;
+    parent.removeChild(n);
+    n = next;
+  }
+  while (segment.firstChild) parent.insertBefore(segment.firstChild, close);
+  (open as Comment).data = '$';
+};
+
+const fillPlaceholder = (doc: Document, segmentId: string, placeholderId: string): void => {
+  const segment = doc.getElementById(segmentId);
+  const placeholder = doc.getElementById(placeholderId);
+  const parent = placeholder?.parentNode;
+  if (!isSegment(segment) || placeholder?.tagName !== 'TEMPLATE' || !parent || segment.contains(placeholder)) return;
+  segment.remove();
+  while (segment.firstChild) parent.insertBefore(segment.firstChild, placeholder);
+  placeholder.remove();
+};
+
+const revealStreamedSegments = (doc: Document): Document => {
+  for (const script of [...doc.querySelectorAll('script')]) {
+    const text = script.textContent || '';
+    if (!text.includes('$R')) continue;
+    for (const m of text.matchAll(STREAM_CALL)) {
+      if (m[1]) fillBoundary(doc, m[1], m[2]);
+      else fillPlaceholder(doc, m[3], m[4]);
+    }
+  }
+  return doc;
+};
+
 const parseDocument = (source: string): Document => {
   const first = parseHTML(source).document as unknown as Document;
   if (first.documentElement?.tagName === 'HTML') return adoptAfterBody(first);
@@ -94,7 +168,7 @@ export const htmlToMarkdown = (
 ): ConversionResult => {
   const injectedBase = opts.baseUrl ?? 'about:blank';
   try {
-    const document = parseDocument(html);
+    const document = revealStreamedSegments(parseDocument(html));
     const adapter = new LinkedomAdapter(document, injectedBase);
     const title = documentTitle(document).trim();
     const markdown = renderBasicMarkdown(document, adapter, {
