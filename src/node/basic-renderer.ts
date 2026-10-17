@@ -1,12 +1,12 @@
-// Basic Markdown renderer for the v0.1 Node build. Covers the essentials:
+// Basic Markdown renderer for the Node build. Covers the essentials:
 // headings, paragraphs, lists, links, images, code blocks, tables, blockquotes,
 // inline formatting, YAML frontmatter, plus STATIC tab discovery emitting
 // '## Tab: {label}' sections (Spark P20 fix — prevents Python+TypeScript panel
 // concatenation on docs.anthropic.com, platform.openai.com, Mintlify, etc.).
 // NOT a port of the full extension renderer.
 //
-// v0.2 will replace this with the full lib/core/html-to-md.ts pipeline via
-// PageAdapter, once the browser renderer is refactored to accept an adapter.
+// A later release may replace this with the full lib/core/html-to-md.ts
+// pipeline via PageAdapter, once the browser renderer accepts an adapter.
 
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';

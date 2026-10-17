@@ -1,8 +1,9 @@
 # @page2ai/core
 
 > Webpage-to-Markdown extraction engine for LLM context (ChatGPT, Claude, Gemini).
-> Same engine that powers the [Page2AI Chrome & Firefox extensions](https://github.com/igorsaevets/page2ai-extension)
-> and the [`@page2ai/mcp` server](https://github.com/igorsaevets/page2ai-mcp).
+> The engine of the [`@page2ai/mcp` server](https://github.com/igorsaevets/page2ai-mcp). The
+> [Page2AI Chrome & Firefox extensions](https://github.com/igorsaevets/page2ai-extension) run their own
+> pipeline in the browser (see below).
 > Preserves code blocks with language hints, tables, and reading structure.
 > Zero telemetry, MIT-licensed.
 
@@ -75,7 +76,7 @@ The fetch refuses anything that is not public, on the URL and on every redirect 
 - Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`; a cell spanning columns or rows leaves empty cells, so every value stays under its header; a span ends with its row group, as browsers lay it out, and a table whose spans would cover more than 100,000 cells is written in the plain layout, cells in source order), blockquotes, definition lists (`**term**` then `: definition`), inline formatting (bold, italic, code). Text sitting directly in a `<div>`, `<section>` or `<span>` is kept as its own paragraph, so dashboards and admin pages built from bare `<div>`s convert too
 - Extracts metadata into YAML frontmatter: `title`, `source`, `captured_at`, `language`, `description`, `canonical`, `og_title`, `og_description`, `author`, `published`, `extractor`, `extractor_version`
 
-## What it does NOT do (v0.1)
+## What it does NOT do
 
 - No tab/dropdown expansion (browser-only interactive machinery)
 - No lazy-load activation (Node has no runtime images)
