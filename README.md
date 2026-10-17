@@ -49,7 +49,7 @@ Converts an HTML string to Markdown. Synchronous.
 - `opts.baseUrl` (string) — URL used to resolve relative links (default: `'about:blank'`)
 - `opts.profile` (string) — accepted, but **ignored by the Node build in this version**: `'dashboard'`, `'marketing'` and the rest produce the same output here. The profiles switch the browser extension's live-page pipeline (clicking tabs, waiting for lazy content), which the Node renderer does not run
 - `opts.includeFrontmatter` (boolean) — emit YAML frontmatter block (default: `true`)
-- `opts.includeImages` (boolean) — emit image links (default: `true`)
+- `opts.includeImages` (boolean) — emit image links (default: `true`). Images inside table cells are left out either way
 - `opts.includeHidden` (boolean) — also convert content under the HTML `hidden` attribute, which a browser does not show (default: `false`). Tab panels, `hidden="until-found"` sections, hidden blocks that hold code and React streaming segments are converted either way
 
 Returns `{ markdown, title, baseUrl, charCount, extractedAt }`. When nothing can be extracted the Markdown says so with `<!-- AI: page has no extractable body content -->` instead of coming back empty.
@@ -61,16 +61,17 @@ Fetches a URL and converts it to Markdown. Async.
 - `url` (string) — the URL to fetch
 - `opts.timeoutMs` (number) — abort after N ms (default: `15000`)
 - `opts.userAgent` (string) — custom user agent (default: `page2ai-core/0.1`)
+- `opts.tryMdSuffixFirst` (boolean) — first ask for `<url>.md` (or `<url>index.md` for a URL ending in `/`), the Markdown twin that Mintlify and other docs platforms serve, and return it when it answers with Markdown (default: `true`; one extra request per call, through the same guard)
 - ...all `htmlToMarkdown` options
 
-Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden.
+Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. A server that answers `text/markdown` (content negotiation: Fumadocs, Mintlify, Vercel, Supabase) gets its Markdown returned as-is; `source` in the result says which way it came (`md-suffix`, `content-negotiation` or `html-parse`), and `includeFrontmatter` applies on every path. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
 
 The fetch refuses anything that is not public, on the URL and on every redirect hop, after DNS resolution: `localhost`, loopback `127.0.0.0/8` and `::1`, `0.0.0.0/8`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16` (cloud metadata) and `fe80::/10`, CGNAT `100.64.0.0/10` (this includes Tailscale addresses), IPv6 unique-local `fc00::/7`, IPv4-mapped IPv6, the unspecified address `::`, and the hostnames `metadata` and `metadata.google.internal`. So a page on your own intranet or tailnet cannot be fetched this way: fetch the HTML yourself and pass it to `htmlToMarkdown`. `assertSafeUrlResolved(url)` runs the same check without fetching, and `findIpBlockReason(address)` applies its address rule; both are exported.
 
 ## What it does
 
 - Parses HTML with [linkedom](https://github.com/WebReflection/linkedom) (fast, browser-DOM-fidelity, no layout engine)
-- Picks a content root (`main article` > `article` > `main` > `[role="main"]` > `body`)
+- Picks a content root: `<main>` (else `[role="main"]`, else `<body>`), replaced by its largest `<article>` when that article holds at least half of the root's text or is three times larger than every other `<article>`. Text outside the root (beside `<main>`, or beside such an article) is not converted
 - Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`), blockquotes, definition lists (`**term**` then `: definition`), inline formatting (bold, italic, code). Text sitting directly in a `<div>`, `<section>` or `<span>` is kept as its own paragraph, so dashboards and admin pages built from bare `<div>`s convert too
 - Extracts metadata into YAML frontmatter: `title`, `source`, `captured_at`, `language`, `description`, `canonical`, `og_title`, `og_description`, `author`, `published`, `extractor`, `extractor_version`
 
