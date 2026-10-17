@@ -2,6 +2,80 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.1.13 - 2026-10-16
+
+Output changes on 4 of the 21 corpus pages, measured on npm 0.1.12 against the release build with
+default options, `includeImages: false` and `includeHidden: true`; each change was read and each is
+one of the fixes below. On the 14-page benchmark corpus `f_score` moves from 0.916 to 0.933 and
+`f_prose` from 0.842 to 0.859, all of it on one page, Anthropic's extended-thinking docs
+(docs.anthropic.com, which redirects to platform.claude.com; 0.000 to 0.233). That
+page's ground truth was made by a static pass that never saw its article and counts the article's
+text as boilerplate, so the score understates the change. No code block, table, heading or list
+item of the 0.1.12 output is lost. The words that go are 16 `Loading...` placeholders, Emotion CSS
+that a `<style>` put inside a docs.sentry.io code block, and `cd my-websitenpx`, two Docusaurus
+code lines that 0.1.12 printed as one.
+
+### Fixed
+
+- **React streaming pages print the article instead of its loading placeholder** (#31, #32). React
+  streaming SSR (Next.js App Router, Remix, Mintlify) sends a Suspense fallback where late content
+  goes, then the content, hidden at the end of `<body>`, with an inline `$RC("B:0","S:0")` that
+  moves it into place. The converter runs no scripts, so the root printed the fallback: the
+  Anthropic page gave 212 characters of `Loading...` for a 12,270-character article. The
+  `$RC`, `$RR` and `$RS` calls are now replayed in document order before the root is picked, and
+  only where a browser runs them: in a classic inline script (no `src`, `nomodule`, module, JSON or
+  text type, nothing inside `<template>` or `<noscript>`), at a statement start, on a segment,
+  boundary and placeholder parsed before the script, on React's own segment wrappers. `$RX` keeps
+  the fallback, and a segment whose boundary is gone is dropped, as React drops it. Chromium,
+  running only each saved page's inline scripts, gave the converter the same page as the replay,
+  byte for byte, on 8 of 8 streaming pages; 25 of 28 adversarial cases from a review equal the
+  browser, and the other 3 redefine or omit `$RC` (see the README). A page with 16,000 calls
+  converts in 0.12 s.
+- **Hidden text no longer reaches the output through code, link names or the content root**
+  (#29, #30). On 0.1.12 a link whose content rendered empty took its name from `textContent`,
+  hidden spans included; inline code and code blocks read `textContent` too, so a hidden span or a
+  `<style>` inside code printed (two lines of Emotion CSS on the docs.sentry.io corpus page); a
+  hidden `<main>` became the root and printed its whole text; a hidden block kept for its `<pre>`
+  printed all its prose. Code, link names and tab labels now take no text from a hidden element of
+  any kind, nor from `<style>`, `<noscript>`, `<canvas>` fallbacks or SVG `<defs>` / `<desc>`, and
+  `<br hidden>` breaks no line. The root is the first `<main>` under no `hidden` (one inside a
+  React segment only when there is no other, never one in a hidden tab panel or an `until-found`
+  section). A hidden block that holds code gives its code blocks and no prose, and a tab panel
+  outside the root is not printed. A hidden block is kept as a React streaming segment only when
+  it is one, React's wrapper with an id ending in `S:` and a hex number: `S:evil` and
+  `<img hidden id="S:0">` no longer pass.
+- **Table cells stay under their headers** (#29, #30). `colspan` and `rowspan` are laid out as the
+  HTML table model lays them out, so the cells after a span keep their columns; a span ends with
+  its row group and `rowspan="0"` spans the rest of it; columns where no cell starts are dropped
+  (`colspan="100"` adds no empty columns); past a budget of covered slots the plain layout is used.
+  An empty cell under a header row keeps its place in a nested table.
+- **Line breaks in code survive** (#29). A `<br>` in code is a line break: every Docusaurus code
+  block ends each line with a `<br>` and no newline, so `cd my-website` and `npx docusaurus start`
+  printed as one line. A `<pre>` in a table cell keeps its lines, one code span per line (8 cells
+  on the Wikipedia corpus page). A `<br>` in a heading is a space.
+- **An image in a table cell is written as its alt text** (#29), which also names an image-only
+  link there; 0.1.12 left such a cell empty (2 cells on the Wikipedia corpus page). An image with
+  `aria-hidden="true"` adds nothing to its cell.
+- **`fetchAndConvert` honours `includeFrontmatter: false` on its Markdown fast paths** (#26). The
+  `.md`-suffix and `text/markdown` paths prepended the frontmatter whatever the option said and
+  counted only the body (`charCount` 144 for a 336-character result), so the MCP server's
+  `include_frontmatter: false` was ignored on every docs site that answers `text/markdown`. Both
+  paths now honour the option and count the returned Markdown, as `htmlToMarkdown` does.
+
+### Docs
+
+- README: what `includeImages` does in a table cell; what `includeHidden` converts either way, and
+  that the default is not a security boundary (a page's own attributes decide the kept kinds, and
+  no CSS is read); `tryMdSuffixFirst`; the `text/markdown` pass-through; how React streaming
+  content is placed and when a page keeps its fallback; the content-root rule as the code applies
+  it; spanning cells; a closed `<details>` needs no clicking.
+
+### Tests
+
+- The package root's exports and its `exports` map are pinned (P2A-009), and the P2A-001 key/value
+  grid is pinned exactly. The streaming tests run React 19.2.0's and React 18's own inline
+  runtimes; 14 of 14 rule mutations fail a test.
+
 ## 0.1.12 - 2026-10-16
 
 Output changes on most pages; the extension, the MCP server and the benchmark numbers move with it.
