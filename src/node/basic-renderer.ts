@@ -96,7 +96,7 @@ export const renderBasicMarkdown = (
 
   if (title) parts.push(`# ${title}`, '');
   if (root && root.children) {
-    const tabGroups = discoverTabGroups(root);
+    const tabGroups = discoverTabGroups(root, opts);
     const capturedPanelEls = new WeakSet<Element>();
     tabGroups.forEach((g) => g.panels.forEach((p) => capturedPanelEls.add(p.el)));
 
@@ -323,12 +323,18 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
   // The semantic container first. <main> is unique per document by spec, so unlike <article>
   // it cannot be a component. Unique among the SHOWN ones: a page may hold several <main> elements as long as all but
   // one are hidden (HTML, "the main element"), and a hidden one became the root and printed its whole text (C7c, codex).
-  // A <main> inside a React streaming segment is shown (isHiddenEl).
-  const shown = (e: Element): boolean => !hiddenUpTo(e, null, opts);
-  const semantic =
-    ([...doc.querySelectorAll('main')] as unknown as Element[]).find(shown) ||
-    ([...doc.querySelectorAll('[role="main"]')] as unknown as Element[]).find(shown) ||
-    null;
+  // So a <main> under no `hidden` at all comes first, one inside a React streaming segment only when there is none, and
+  // one under a hidden tab panel or `until-found` section never: those are shown as one part of the page, so as the
+  // root they printed only themselves and dropped the visible <main> (T124 panel: codex, grok, mimo, spark, agy).
+  const clearUp = (e: Element, exempt: (a: Element) => boolean): boolean => {
+    for (let a: Element | null = e; a; a = a.parentElement) if (underHiddenAttr(a, opts) && !exempt(a)) return false;
+    return true;
+  };
+  const pick = (selector: string): Element | undefined => {
+    const all = [...doc.querySelectorAll(selector)] as unknown as Element[];
+    return all.find((e) => clearUp(e, () => false)) || all.find((e) => clearUp(e, isReactSegment));
+  };
+  const semantic = pick('main') || pick('[role="main"]') || null;
   const container = semantic || usableBody(doc);
   if (!container) return null;
 
@@ -372,7 +378,7 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
 // Static tab discovery: aria-controls chains, role="tablist" siblings, and
 // data-state attribute pairs. Emits '## Tab: {label}' sections. Does NOT
 // click — for Node we treat each panel as ALREADY present in the DOM.
-const discoverTabGroups = (root: Element): TabGroup[] => {
+const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
   const groups: TabGroup[] = [];
   const seenContainers = new WeakSet<Element>();
   // Path 1: [role="tablist"] with aria-controls chain
@@ -381,7 +387,8 @@ const discoverTabGroups = (root: Element): TabGroup[] => {
     const tabs = [...tl.querySelectorAll('[role="tab"], button')];
     const panels: Array<{ label: string; el: Element }> = [];
     for (const tab of tabs) {
-      const label = cleanInline(tab.textContent || '');
+      // A tab's label is its name, without the text of hidden elements (T124 panel: `One<span hidden>x</span>` read Onex).
+      const label = cleanInline(nameText(tab, opts));
       if (!label) continue;
       const controls = tab.getAttribute('aria-controls');
       if (!controls) continue;
@@ -389,7 +396,9 @@ const discoverTabGroups = (root: Element): TabGroup[] => {
       const doc = tl.ownerDocument;
       if (!doc) continue;
       const panel = doc.getElementById(controls);
-      if (!panel) continue;
+      // A panel outside the content root is not part of it: a hidden block anywhere on the page was one aria-controls
+      // away from being printed (T124 panel: ocmimo).
+      if (!panel || !root.contains(panel)) continue;
       panels.push({ label, el: panel });
     }
     if (panels.length >= 2) {
@@ -414,7 +423,7 @@ const discoverTabGroups = (root: Element): TabGroup[] => {
       const labelledText = labelledBy && doc
         ? labelledBy
             .split(/\s+/)
-            .map((id) => doc.getElementById(id)?.textContent || '')
+            .map((id) => { const e = doc.getElementById(id); return e ? nameText(e, opts) : ''; })
             .join(' ')
             .replace(/\s+/g, ' ')
             .trim()
@@ -543,13 +552,15 @@ const renderNode = (
   const hidden = hiddenKind(el, opts);
   if (hidden === 'hidden') return;
   if (hidden === 'code') {
-    for (const pre of outerPres(el)) renderCodeBlock(pre, out, opts);
+    for (const pre of outerPres(el, opts)) renderCodeBlock(pre, out, opts);
     return;
   }
 
   if (/^H[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1));
-    const text = renderInline(el, opts).trim();
+    // A heading is one line, so a <br> in it, in its text or its code, is a space (T124 panel: mimo,
+    // `<h2>Run <code>a<br>b</code> now</h2>` put the rest of the heading into a paragraph under it).
+    const text = renderInline(el, opts).replace(/\s*\n\s*/g, ' ').trim();
     if (text) {
       if (dedupe.pendingTitle) {
         // Match on textContent, not the rendered markdown: escaping and link syntax
@@ -740,7 +751,7 @@ const renderListItem = (
 type ElementFilter = { has(el: Element): boolean };
 
 const renderInline = (el: Element, opts: RenderOpts, excludeEls?: ElementFilter): string =>
-  renderInlineNodes(hiddenKind(el, opts) === 'code' ? outerPres(el) : [...el.childNodes], opts, excludeEls);
+  renderInlineNodes(hiddenKind(el, opts) === 'code' ? outerPres(el, opts) : [...el.childNodes], opts, excludeEls);
 
 const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
 
@@ -762,21 +773,43 @@ type HiddenKind = 'shown' | 'hidden' | 'code';
 const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
   if (opts.includeHidden || !el.hasAttribute('hidden')) return 'shown';
   if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return 'shown';
-  if (el.getAttribute('role') === 'tabpanel' || el.tagName === 'PRE' || isReactSegment(el)) return 'shown';
+  // A tab panel is a block: all 27 on the corpus are <div>s, and `<a><span hidden role="tabpanel">` printed its text
+  // as the link's (T124 panel: mimo).
+  if ((el.getAttribute('role') === 'tabpanel' && !PHRASING_TAGS.has(el.tagName)) || el.tagName === 'PRE' || isReactSegment(el)) return 'shown';
   return el.querySelector('pre') ? 'code' : 'hidden';
 };
 const isHiddenEl = (el: Element, opts: RenderOpts): boolean => hiddenKind(el, opts) !== 'shown';
+// Under the attribute at all, the kept kinds included. Code, a link's name, a tab's label and the page's <main> must not
+// come from a hidden element of any kind (T124 panel: `<a><span hidden role="tabpanel">x</span></a>` was named x, and a
+// <main> inside a hidden tab panel became the root and dropped the visible <main>).
+const underHiddenAttr = (el: Element, opts: RenderOpts): boolean => !opts.includeHidden && el.hasAttribute('hidden');
 
-// React streaming segments as react-dom's server writes them (ReactFizzConfigDOM.js, startSegment*): the hidden element
-// carries the `S:` id, except in a table context, where `<table hidden>` holds a <tbody>, <tr> or <colgroup> that does.
-// A child's `S:` id counted on any hidden element, so `<div hidden><p id="S:0">` kept the whole block (C14, grok).
-const isReactSegment = (el: Element): boolean =>
-  /^S:/.test(el.id) ||
-  (el.tagName === 'TABLE' && [...el.children].some((c) => /^(?:TBODY|TR|COLGROUP)$/.test(c.tagName) && /^S:/.test(c.id)));
+// React streaming segments as react-dom's server writes them (ReactFizzConfigDOM.js, startSegment*): `<div hidden id=…>`,
+// in a table context `<table hidden id=…>` or a `<table hidden>` whose <tbody>, <tr> or <colgroup> carries the id. The id
+// is the render's identifierPrefix, `S:` and the segment number in hex. A child's `S:` id counted on any hidden element
+// (C14, grok), and so did any element and anything after `S:`: `<img hidden id="S:0">` printed its alt and `id="S:evil"`
+// passed (T124 panel: codex, mimo). An HTML parser puts a <tbody> around `<table><tr>`, so a saved or re-serialised page
+// has `<table hidden><tbody><tr id=…>` (grok).
+const SEGMENT_ID = /S:[0-9a-f]+$/;
+const isReactSegment = (el: Element): boolean => {
+  if (el.tagName === 'DIV') return SEGMENT_ID.test(el.id);
+  if (el.tagName !== 'TABLE') return false;
+  if (SEGMENT_ID.test(el.id)) return true;
+  return [...el.children].some((c) =>
+    (/^(?:TBODY|TR|COLGROUP)$/.test(c.tagName) && SEGMENT_ID.test(c.id)) ||
+    (c.tagName === 'TBODY' && !c.id && [...c.children].some((r) => r.tagName === 'TR' && SEGMENT_ID.test(r.id))));
+};
 
-// The <pre> elements of a block, outermost only.
-const outerPres = (el: Element): Element[] =>
-  [...el.querySelectorAll('pre')].filter((p) => !p.parentElement?.closest('pre')) as Element[];
+// The <pre> elements of a block, outermost only, without those in a hidden list item, row, cell or other entry of a
+// structure: such an entry is left out whole wherever it stands (T124 panel: codex, `<div hidden><ul><li hidden><pre>`
+// printed the code that the same <li hidden> outside a hidden block drops).
+const HIDDEN_ENTRY = /^(?:LI|TR|TD|TH|CAPTION|DT|DD|THEAD|TBODY|TFOOT)$/;
+const outerPres = (el: Element, opts: RenderOpts): Element[] =>
+  ([...el.querySelectorAll('pre')] as Element[]).filter((p) => {
+    if (p.parentElement?.closest('pre')) return false;
+    for (let e = p.parentElement; e && e !== el; e = e.parentElement) if (HIDDEN_ENTRY.test(e.tagName) && isHiddenEl(e, opts)) return false;
+    return true;
+  });
 
 // A line of page TEXT that starts with Markdown block syntax becomes that block: `# x` a heading, `> x`
 // a quote, `1. x` a list, `---` a rule, `<div` raw HTML, and an unclosed ``` fence swallows every line
@@ -832,16 +865,24 @@ const linkText = (a: Element, opts: RenderOpts, href: string, excludeEls?: Eleme
 // <style> or <script>, which name nothing. An image's alt is not used here: in a table cell the image already renders as
 // its alt (C11a), and with includeImages: false an image link stays out, as the option says (the alt fallback wrote
 // `[User avatar](profile)` before every author on the phpBB corpus page, T124 A/B).
-const linkName = (a: Element, opts: RenderOpts): string => {
+const linkName = (a: Element, opts: RenderOpts): string => nameText(a, opts);
+
+// The text an element is named by, a link that renders empty or a tab: its text without what is not drawn, which is a
+// hidden element of any kind, the fallback of a skipped element (<noscript>, <canvas>, <object>, <video>), and inside an
+// SVG the parts SVG does not render (<defs>, <symbol>, <desc>, <metadata>). T124 panel: codex, grok, agy. An SVG's
+// <title> and <text> stay: the <title> names an icon.
+const SVG_UNDRAWN = /^(?:DEFS|SYMBOL|DESC|METADATA|STYLE|SCRIPT|CLIPPATH|MASK|PATTERN|MARKER|LINEARGRADIENT|RADIALGRADIENT|FILTER)$/;
+const nameText = (el: Element, opts: RenderOpts): string => {
   let s = '';
-  const walk = (n: Node): void => {
+  const walk = (n: Node, svg: boolean): void => {
     if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
     if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
     const e = n as Element;
-    if (isHiddenEl(e, opts) || /^(?:SCRIPT|STYLE|TEMPLATE)$/.test(e.tagName)) return;
-    for (const c of e.childNodes) walk(c);
+    const tag = e.tagName.toUpperCase();
+    if (underHiddenAttr(e, opts) || (svg ? SVG_UNDRAWN.test(tag) : SKIP_TAGS.has(tag) && tag !== 'SVG')) return;
+    for (const c of e.childNodes) walk(c, svg || tag === 'SVG');
   };
-  for (const c of a.childNodes) walk(c);
+  for (const c of el.childNodes) walk(c, false);
   return s;
 };
 
@@ -857,8 +898,10 @@ const codeText = (el: Element, opts: RenderOpts, br = '\n'): string => {
     if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
     if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
     const e = n as Element;
+    // Hidden elements of every kind and skipped ones before the <br>: `<br hidden>` breaks no line, a <style> in code is
+    // not code, and a tab panel or an `S:` span inside code is no code tab (T124 panel: codex, grok, agy).
+    if (underHiddenAttr(e, opts) || SKIP_TAGS.has(e.tagName)) return;
     if (e.tagName === 'BR') { s += br; return; }
-    if (isHiddenEl(e, opts)) return;
     for (const c of e.childNodes) walk(c);
   };
   for (const c of el.childNodes) walk(c);
@@ -967,7 +1010,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     if (SKIP_TAGS.has(tag) || hidden === 'hidden') continue;
     if (hidden === 'code') {
       // Each <pre> is set on its own lines by the PRE branch below.
-      const code = renderInlineNodes(outerPres(c), opts, excludeEls);
+      const code = renderInlineNodes(outerPres(c, opts), opts, excludeEls);
       add(code, true, code.trim());
       continue;
     }
@@ -1009,8 +1052,9 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
       if (!opts.includeImages) {
         // A table cell shows no image but keeps its alt text, the text that stands for an image which is not shown (HTML,
         // "the img element"): a severity icon's CRITICAL came out as an empty cell (C11b, T121 panel). An empty alt marks
-        // a decorative image and adds nothing.
-        const alt = opts.imageAlt ? cleanInline(c.getAttribute('alt') || '') : '';
+        // a decorative image and adds nothing, and so does aria-hidden="true" (T124 panel: agy, a bullet image wrote
+        // "bullet point" before every value).
+        const alt = opts.imageAlt && !isAriaHidden(c) ? cleanInline(c.getAttribute('alt') || '') : '';
         if (alt) add(` ${opts.inLink ? escapeLinkText(alt) : alt} `, true, alt);
         continue;
       }
@@ -1112,7 +1156,12 @@ const normalizeLang = (raw: string, knownOnly: boolean): string => {
 };
 
 const renderCodeBlock = (pre: Element, out: string[], opts: RenderOpts): void => {
-  const codeEl = pre.querySelector('code') || pre;
+  // The first <code> not under a hidden element: a hidden one replaced the visible text (T124 panel: codex,
+  // `<pre>VISIBLE<code hidden>SECRET</code>TAIL</pre>` printed SECRET where Chromium shows VISIBLETAIL).
+  const codeEl = ([...pre.querySelectorAll('code')] as Element[]).find((c) => {
+    for (let e: Element | null = c; e && e !== pre; e = e.parentElement) if (underHiddenAttr(e, opts)) return false;
+    return true;
+  }) || pre;
   const text = codeText(codeEl, opts).replace(/\r/g, '').replace(/^\n+|\n+$/g, '');
   if (!text.trim()) return;
 
@@ -1204,9 +1253,14 @@ const cellMd = (el: Element, opts: RenderOpts): string =>
 
 // The rows as a grid of slots, laid out as the HTML table model lays them: a cell spanning columns or rows leaves `null`
 // in the slots it covers, so the cells after it stay under their own headers (C6, codex: the cell after a colspan="2"
-// landed one column left). Spans are clamped as browsers clamp them (colspan 1..1000, rowspan 0..65534, 0 = to the last
-// row), and only the columns in which some cell starts are kept: `colspan="100"` on a details row means "the full
-// width", not a hundred columns. The extension pads a colspan with empty cells the same way (max 20, no rowspan).
+// landed one column left). Spans are clamped as browsers clamp them (colspan 1..1000, rowspan 0..65534), and a span ends
+// with its row group, a <thead>, a <tbody>, a <tfoot> or a run of rows straight under <table>; rowspan="0" spans the
+// rest of the group. Chromium puts the <tbody> row after a <thead> rowspan="2" under the headers, where the grid pushed
+// it one column right (HTML: "A cell cannot cover slots that are from two or more row groups"; T124 panel: codex, grok,
+// mimo, agy; audits/T125-2026-10-16/scripts/browser_layout_check.py). A row under `hidden` takes no part: Chromium lays a
+// rowspan over the next shown row. Only the columns in which some cell starts are kept: `colspan="100"` on a details
+// row means "the full width", not a hundred columns. The extension pads a colspan with empty cells the same way (max 20,
+// no rowspan).
 // The page decides the spans, so the slots they cover are budgeted: past SPAN_SLOTS the table gets the plain layout,
 // cells in source order, which is what earlier versions printed for every table.
 const SPAN_SLOTS = 100000;
@@ -1214,13 +1268,18 @@ const tableGrid = (rows: Element[], opts: RenderOpts): Array<Array<Element | nul
   const grid: Array<Array<Element | null | undefined>> = rows.map(() => []);
   const starts = new Set<number>();
   let covered = 0;
+  const groupEnd: number[] = [];
+  for (let r = rows.length - 1; r >= 0; r--) {
+    groupEnd[r] = r + 1 < rows.length && rows[r + 1].parentElement === rows[r].parentElement ? groupEnd[r + 1] : r + 1;
+  }
   for (let r = 0; r < rows.length; r++) {
     let col = 0;
+    const left = groupEnd[r] - r;
     for (const cell of ownCells(rows[r], opts)) {
       while (grid[r][col] !== undefined) col++;
       const cs = Math.min(Math.max(parseInt(cell.getAttribute('colspan') || '', 10) || 1, 1), 1000);
       const rsRaw = parseInt(cell.getAttribute('rowspan') || '', 10);
-      const rs = Math.min(rsRaw === 0 ? rows.length - r : Math.max(rsRaw || 1, 1), 65534, rows.length - r);
+      const rs = rsRaw === 0 ? left : Math.min(Math.max(rsRaw || 1, 1), 65534, left);
       covered += cs * rs - 1;
       if (covered > SPAN_SLOTS) return rows.map((tr) => ownCells(tr, opts));
       for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) grid[r + dr][col + dc] = dr || dc ? null : cell;
