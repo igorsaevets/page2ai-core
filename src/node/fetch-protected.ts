@@ -6,14 +6,19 @@
 // - AbortController timeout (default 15s, covers the whole redirect chain)
 // - Response size cap (default 10MB) — abort if body exceeds
 // - Strips UTF-8 BOM from response text
-// - Basic content-type guard: only text/html, text/markdown, text/plain accepted
-// - The Accept header asks for the HTML page and never for Markdown: docs platforms that
-//   negotiate (Fumadocs, Mintlify, Vercel, Supabase) would answer their own Markdown copy,
-//   which can be older than the page (BL-49). A URL that is itself a Markdown file is still
-//   served as one, through `*/*`, and the content-type guard still accepts it.
+// - Basic content-type guard: text/html, application/xhtml+xml, text/markdown, text/x-markdown
+//   and text/plain by default; a caller may widen it (fetchAndConvert does for a URL that names
+//   a text file)
+// - The Accept header is the one Firefox sends when it navigates to a page (BROWSER_ACCEPT), so a
+//   docs platform that negotiates (Fumadocs, Mintlify, Vercel, Supabase, Stripe, the Claude docs)
+//   answers with the page a person sees, not with its own Markdown copy, which can be older than
+//   the page (BL-49). It contains neither `markdown` nor `text/plain`, because servers match those
+//   words in the header and ignore its q-values (T137, measured 2026-10-17: `text/html,
+//   text/markdown;q=0` still got Markdown from platform.claude.com; `text/html,text/plain` got it
+//   from fumadocs.dev). A URL that is itself a Markdown or text file is still served, through `*/*`.
 //
-// KNOWN LIMITATION (v0.1): no charset detection for non-UTF-8 pages (Windows-1251
-// docs will mojibake). Planned for v0.2 via `fetch-charset-detection`.
+// KNOWN LIMITATION: no charset detection for non-UTF-8 pages (Windows-1251 docs will
+// mojibake); a later release may add it via `fetch-charset-detection`.
 
 import { assertSafeUrlResolved, SsrfBlockedError } from './ssrf-guard.js';
 
@@ -35,7 +40,11 @@ export interface FetchProtectedResult {
 const DEFAULT_UA = 'page2ai-core/0.1 (+https://github.com/igorsaevets/page2ai-core)';
 const DEFAULT_TIMEOUT = 15000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;  // 10 MB
-const DEFAULT_ACCEPT = /^(text\/html|text\/markdown|text\/plain|application\/xhtml\+xml)/i;
+const DEFAULT_ACCEPT = /^(text\/html|text\/markdown|text\/x-markdown|text\/plain|application\/xhtml\+xml)/i;
+// Firefox 132 and later, top-level navigation (MDN, "List of default Accept values", read 2026-10-17:
+// https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Content_negotiation/List_of_default_Accept_values).
+// A server that answered this header with Markdown would answer every Firefox user with it.
+export const BROWSER_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
 const MAX_REDIRECTS = 10;
 
 export class FetchProtectionError extends Error {
@@ -73,7 +82,7 @@ export const fetchProtected = async (
         signal: controller.signal,
         headers: {
           'user-agent': ua,
-          accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
+          accept: BROWSER_ACCEPT,
         },
         redirect: 'manual',
       });
