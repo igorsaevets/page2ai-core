@@ -2,6 +2,14 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+### Changed (breaking)
+
+- **`fetchAndConvert` reads only the page you name** (BL-49). It no longer asks for `<url>.md` first, and its Accept header (`text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5`) no longer lists `text/markdown`, so Fumadocs, Mintlify, Vercel and Supabase answer with the HTML page instead of their own Markdown copy, which can be older than the page. On those sites the output is now converted from the page. A URL that is itself Markdown is still returned as is.
+- `FetchAndConvertOptions.tryMdSuffixFirst` is removed; a value passed anyway is ignored.
+- `ConversionResult.source` is `'html-parse' | 'markdown-response'`: `'md-suffix'` and `'content-negotiation'` are gone, and so is `'llms-txt'`, which nothing ever returned. The frontmatter of a Markdown response says `extractor_source: "markdown-response"`.
+
 ## 0.1.13 - 2026-10-16
 
 Output changes on 4 of the 21 corpus pages, measured on npm 0.1.12 against the release build with

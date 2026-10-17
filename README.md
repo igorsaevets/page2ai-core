@@ -61,10 +61,9 @@ Fetches a URL and converts it to Markdown. Async.
 - `url` (string) — the URL to fetch
 - `opts.timeoutMs` (number) — abort after N ms (default: `15000`)
 - `opts.userAgent` (string) — custom user agent (default: `page2ai-core/0.1`)
-- `opts.tryMdSuffixFirst` (boolean) — first ask for `<url>.md` (or `<url>index.md` for a URL ending in `/`), the Markdown twin that Mintlify and other docs platforms serve, and return it when it answers with Markdown (default: `true`; one extra request per call, through the same guard)
 - ...all `htmlToMarkdown` options
 
-Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. A server that answers `text/markdown` (content negotiation: Fumadocs, Mintlify, Vercel, Supabase) gets its Markdown returned as-is; `source` in the result says which way it came (`md-suffix`, `content-negotiation` or `html-parse`), and `includeFrontmatter` applies on every path. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
+Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. It requests only the URL you pass: no `<url>.md` twin, no `llms.txt`, and the Accept header asks for HTML and never for Markdown, so a docs platform that negotiates (Fumadocs, Mintlify, Vercel, Supabase) answers with the page, not its own Markdown copy, which can be older than the page. A URL that is itself Markdown (a `.md` file served as `text/markdown`) is the page and is returned as is. `source` in the result says which way it came (`html-parse` or `markdown-response`), and `includeFrontmatter` applies on both. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
 
 The fetch refuses anything that is not public, on the URL and on every redirect hop, after DNS resolution: `localhost`, loopback `127.0.0.0/8` and `::1`, `0.0.0.0/8`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16` (cloud metadata) and `fe80::/10`, CGNAT `100.64.0.0/10` (this includes Tailscale addresses), IPv6 unique-local `fc00::/7`, IPv4-mapped IPv6, the unspecified address `::`, and the hostnames `metadata` and `metadata.google.internal`. So a page on your own intranet or tailnet cannot be fetched this way: fetch the HTML yourself and pass it to `htmlToMarkdown`. `assertSafeUrlResolved(url)` runs the same check without fetching, and `findIpBlockReason(address)` applies its address rule; both are exported.
 
@@ -93,7 +92,6 @@ The fetch refuses anything that is not public, on the URL and on every redirect 
 - **v0.1** (current) — Node basic renderer, browser adapter interface published
 - **v0.2** — full port of `lib/core/html-to-md.ts` via PageAdapter, browser entry migrated from extension repo
 - **v0.3** — headless-browser adapter (Playwright or Puppeteer) for React/Vue/SPA rendering, profile auto-detection in Node path, structured-data extraction. Client-rendered pages (e.g. platform.claude.com) that ship a nearly empty `<div id="root">` from static HTML currently produce a graceful fallback error under v0.1 — the SPA adapter in v0.3 will handle them.
-- **v0.4** — official-markdown fallback (llms.txt, .md sibling URLs), MDX handling
 
 ## Architecture
 
