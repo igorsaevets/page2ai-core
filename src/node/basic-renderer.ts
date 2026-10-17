@@ -56,6 +56,8 @@ interface RenderOpts {
   // Table cells: two adjacent elements get no space of ours (renderInlineNodes), as cells never had one. The space
   // split Sphinx's `asyncio.` + `FIRST_COMPLETED` into two words on the python-docs corpus page (T115 A/B).
   tight?: boolean;
+  // Table cells and captions: an image that is not shown is written as its alt text (renderInlineNodes, IMG).
+  imageAlt?: boolean;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -81,7 +83,7 @@ export const renderBasicMarkdown = (
 ): string => {
   const parts: string[] = [];
 
-  const root = pickContentRoot(doc);
+  const root = pickContentRoot(doc, opts);
   const rawTitle = cleanInline(documentTitle(doc));
   // The site suffix is dropped, not relocated: an earlier draft emitted it as a `site_name:`
   // frontmatter field, which put the exact chrome string the cleanup had just removed back
@@ -317,12 +319,16 @@ const usableBody = (doc: Document): Element | null => {
   return (doc.documentElement as unknown as Element) || body || null;
 };
 
-const pickContentRoot = (doc: Document): Element | null => {
+const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
   // The semantic container first. <main> is unique per document by spec, so unlike <article>
-  // it cannot be a component.
+  // it cannot be a component. Unique among the SHOWN ones: a page may hold several <main> elements as long as all but
+  // one are hidden (HTML, "the main element"), and a hidden one became the root and printed its whole text (C7c, codex).
+  // A <main> inside a React streaming segment is shown (isHiddenEl).
+  const shown = (e: Element): boolean => !hiddenUpTo(e, null, opts);
   const semantic =
-    (doc.querySelector('main') as unknown as Element | null) ||
-    (doc.querySelector('[role="main"]') as unknown as Element | null);
+    ([...doc.querySelectorAll('main')] as unknown as Element[]).find(shown) ||
+    ([...doc.querySelectorAll('[role="main"]')] as unknown as Element[]).find(shown) ||
+    null;
   const container = semantic || usableBody(doc);
   if (!container) return null;
 
@@ -332,7 +338,9 @@ const pickContentRoot = (doc: Document): Element | null => {
   // comments. On docs.astro.build the first <article> is `class="card sl-flex"` holding 155
   // characters while <main> holds 1,362, so the tool emitted a heading, one question and one
   // sentence for the whole page. Our own documentation site runs that framework.
+  // An <article> under a hidden ancestor is not a candidate: as the root it would print what the browser hides.
   const articles = Array.from(container.querySelectorAll('article'))
+    .filter((a) => !hiddenUpTo(a as unknown as Element, container, opts))
     .map((a) => ({ el: a as unknown as Element, n: contentTextLength(a as unknown as Element) }))
     .sort((x, y) => y.n - x.n);
 
@@ -479,8 +487,9 @@ const walkNodes = (
     }
     if (node.nodeType !== 1 /* ELEMENT_NODE */) continue;
     const c = node as Element;
-    // Skipped where they stand, without ending the run: renderNode would drop them anyway.
-    if (SKIP_TAGS.has(c.tagName) || isHiddenEl(c, opts)) continue;
+    // Skipped where they stand, without ending the run: renderNode would drop them anyway. A hidden block that holds code
+    // goes on to renderNode, which prints only its code.
+    if (SKIP_TAGS.has(c.tagName) || hiddenKind(c, opts) === 'hidden') continue;
     const phrasing = PHRASING_TAGS.has(c.tagName) || (parentHasText && c.tagName.includes('-'));
     if (phrasing && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
       if (isAriaHidden(c)) continue;
@@ -530,7 +539,13 @@ const renderNode = (
 ): void => {
   const tag = el.tagName;
   if (SKIP_TAGS.has(tag)) return;
-  if (isAriaHidden(el) || isHiddenEl(el, opts)) return;
+  if (isAriaHidden(el)) return;
+  const hidden = hiddenKind(el, opts);
+  if (hidden === 'hidden') return;
+  if (hidden === 'code') {
+    for (const pre of outerPres(el)) renderCodeBlock(pre, out, opts);
+    return;
+  }
 
   if (/^H[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1));
@@ -549,7 +564,7 @@ const renderNode = (
   }
 
   if (tag === 'PRE') {
-    renderCodeBlock(el, out);
+    renderCodeBlock(el, out, opts);
     return;
   }
 
@@ -696,7 +711,7 @@ const renderListItem = (
   for (const node of li.childNodes) {
     if (node.nodeType === 1 /* ELEMENT_NODE */) {
       const c = node as Element;
-      if (isHiddenEl(c, opts)) continue;
+      if (hiddenKind(c, opts) === 'hidden') continue;
       if (c.tagName === 'P') {
         flushInline();
         emitText(renderInline(c, opts, capturedPanelEls).trim(), 'para');
@@ -725,7 +740,7 @@ const renderListItem = (
 type ElementFilter = { has(el: Element): boolean };
 
 const renderInline = (el: Element, opts: RenderOpts, excludeEls?: ElementFilter): string =>
-  renderInlineNodes([...el.childNodes], opts, excludeEls);
+  renderInlineNodes(hiddenKind(el, opts) === 'code' ? outerPres(el) : [...el.childNodes], opts, excludeEls);
 
 const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
 
@@ -738,13 +753,30 @@ const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') |
 // its yarn, pnpm, Loader and CDN variants in bare `<div hidden>`s: dropping them lost 5 unique code blocks) or a copy
 // buffer repeating visible code; and React streaming segments: React SSR (Next.js, Mintlify) sends late Suspense
 // content as `<div hidden id="S:0">`, or `<table hidden><tbody id="S:0">` in a table, and a script moves it into place.
-const isHiddenEl = (el: Element, opts: RenderOpts): boolean => {
-  if (opts.includeHidden || !el.hasAttribute('hidden')) return false;
-  if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return false;
-  if (el.getAttribute('role') === 'tabpanel') return false;
-  if (el.tagName === 'PRE' || el.querySelector('pre')) return false;
-  return !(/^S:/.test(el.id) || [...el.children].some((c) => /^S:/.test(c.id)));
+//
+// The code exemption keeps the code and nothing else (C13, T121 panel): it exists for code, and a hidden block kept whole
+// for one <pre> printed all its prose, so `<div hidden><p>instructions</p><pre>x</pre></div>` carried the instructions.
+// hiddenKind says 'code' for such a block; a walk enters only its outermost <pre>s (outerPres). A hidden list item, row,
+// cell, caption, term or definition is left out whole, code or not (isHiddenEl): it is one entry of a structure.
+type HiddenKind = 'shown' | 'hidden' | 'code';
+const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
+  if (opts.includeHidden || !el.hasAttribute('hidden')) return 'shown';
+  if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return 'shown';
+  if (el.getAttribute('role') === 'tabpanel' || el.tagName === 'PRE' || isReactSegment(el)) return 'shown';
+  return el.querySelector('pre') ? 'code' : 'hidden';
 };
+const isHiddenEl = (el: Element, opts: RenderOpts): boolean => hiddenKind(el, opts) !== 'shown';
+
+// React streaming segments as react-dom's server writes them (ReactFizzConfigDOM.js, startSegment*): the hidden element
+// carries the `S:` id, except in a table context, where `<table hidden>` holds a <tbody>, <tr> or <colgroup> that does.
+// A child's `S:` id counted on any hidden element, so `<div hidden><p id="S:0">` kept the whole block (C14, grok).
+const isReactSegment = (el: Element): boolean =>
+  /^S:/.test(el.id) ||
+  (el.tagName === 'TABLE' && [...el.children].some((c) => /^(?:TBODY|TR|COLGROUP)$/.test(c.tagName) && /^S:/.test(c.id)));
+
+// The <pre> elements of a block, outermost only.
+const outerPres = (el: Element): Element[] =>
+  [...el.querySelectorAll('pre')].filter((p) => !p.parentElement?.closest('pre')) as Element[];
 
 // A line of page TEXT that starts with Markdown block syntax becomes that block: `# x` a heading, `> x`
 // a quote, `1. x` a list, `---` a rule, `<div` raw HTML, and an unclosed ``` fence swallows every line
@@ -791,8 +823,55 @@ const mdUrl = (u: string): string => {
 const linkText = (a: Element, opts: RenderOpts, href: string, excludeEls?: ElementFilter, trim = true): string => {
   const inner = renderInline(a, href ? { ...opts, inLink: true } : opts, excludeEls).replace(/[ \t]*\n[ \t]*/g, ' ');
   if (inner.trim()) return trim ? inner.trim() : inner;
-  const fallback = cleanInline(a.textContent || '');
+  const fallback = cleanInline(linkName(a, opts));
   return href ? escapeLinkText(fallback) : fallback;
+};
+
+// The name of a link whose content renders to nothing: its text, which keeps an icon's SVG <title>, as textContent did.
+// textContent also returned the text of hidden elements (C7a, codex: `<a><span hidden>x</span></a>` printed x) and of a
+// <style> or <script>, which name nothing. An image's alt is not used here: in a table cell the image already renders as
+// its alt (C11a), and with includeImages: false an image link stays out, as the option says (the alt fallback wrote
+// `[User avatar](profile)` before every author on the phpBB corpus page, T124 A/B).
+const linkName = (a: Element, opts: RenderOpts): string => {
+  let s = '';
+  const walk = (n: Node): void => {
+    if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
+    if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
+    const e = n as Element;
+    if (isHiddenEl(e, opts) || /^(?:SCRIPT|STYLE|TEMPLATE)$/.test(e.tagName)) return;
+    for (const c of e.childNodes) walk(c);
+  };
+  for (const c of a.childNodes) walk(c);
+  return s;
+};
+
+// The text of code as a browser lays it out: a <br> is a line break, and hidden elements are left out. textContent
+// skips the first and keeps the second: Docusaurus ends every line of a code block with a <br> and writes no newline
+// character, so `cd my-website` and `npx docusaurus start` came out as one line (benchmark corpus, T124), `x<br>y` in
+// inline code read `xy` (C5, codex), and `<code>a<span hidden>s</span>b</code>` printed the hidden s (C7b, codex).
+// Outside a <pre> a newline in the source is only whitespace, so inline code marks a <br> with BR_MARK instead.
+const BR_MARK = '\u0000';
+const codeText = (el: Element, opts: RenderOpts, br = '\n'): string => {
+  let s = '';
+  const walk = (n: Node): void => {
+    if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
+    if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
+    const e = n as Element;
+    if (e.tagName === 'BR') { s += br; return; }
+    if (isHiddenEl(e, opts)) return;
+    for (const c of e.childNodes) walk(c);
+  };
+  for (const c of el.childNodes) walk(c);
+  return s;
+};
+
+// Lines of code as inline Markdown: one code span per line, the lines joined by a line break, which a table cell writes
+// as <br> (C28: a <pre> in a cell folded into one line; C5). Blank lines at either end are dropped.
+const codeLines = (raw: string[]): string => {
+  const lines = raw.map(collapseWs);
+  while (lines.length > 1 && !lines[0].trim()) lines.shift();
+  while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.map((l) => wrapInline(l, codeSpan)).join('\n');
 };
 
 // A code span needs a fence longer than any backtick run inside it, padded with a space when the text
@@ -884,8 +963,21 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     // aria-hidden is NOT skipped here, although the block walk skips it: docs.sentry.io puts the whole text
     // of 15 <h2>s inside `<a aria-hidden="true">`, and skipping it deleted every one (T109 A/B). The
     // attribute hides from screen readers, not from the screen. `hidden` hides from both (isHiddenEl).
-    if (SKIP_TAGS.has(tag) || isHiddenEl(c, opts)) continue;
+    const hidden = hiddenKind(c, opts);
+    if (SKIP_TAGS.has(tag) || hidden === 'hidden') continue;
+    if (hidden === 'code') {
+      // Each <pre> is set on its own lines by the PRE branch below.
+      const code = renderInlineNodes(outerPres(c), opts, excludeEls);
+      add(code, true, code.trim());
+      continue;
+    }
     if (tag === 'BR') { add('\n', false); continue; }
+    if (tag === 'PRE') {
+      // A <pre> in inline position, which is in a table cell or a link: its lines stay lines (codeLines).
+      const code = codeLines(codeText(c, opts).replace(/\r/g, '').split('\n'));
+      add(`\n${code}\n`, true, collapseWs(c.textContent || '').trim());
+      continue;
+    }
     if (tag === 'TABLE') {
       // In inline position a table is nested in a table cell (the block walk renders every other one): its rows
       // become lines of the cell instead of rows of the outer table (P2A-013).
@@ -907,14 +999,21 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
       continue;
     }
     if (tag === 'CODE') {
-      const code = collapseWs(c.textContent || '');
-      add(wrapInline(code, codeSpan), true, code.trim());
+      const lines = codeText(c, opts, BR_MARK).split(BR_MARK);
+      add(codeLines(lines), true, collapseWs(lines.join(' ')).trim());
       continue;
     }
     if (tag === 'IMG') {
       // Same includeImages contract and src fallback as the block-level IMG branch: an image
       // wrapped in a link, list item, table cell or text run arrives here instead.
-      if (!opts.includeImages) continue;
+      if (!opts.includeImages) {
+        // A table cell shows no image but keeps its alt text, the text that stands for an image which is not shown (HTML,
+        // "the img element"): a severity icon's CRITICAL came out as an empty cell (C11b, T121 panel). An empty alt marks
+        // a decorative image and adds nothing.
+        const alt = opts.imageAlt ? cleanInline(c.getAttribute('alt') || '') : '';
+        if (alt) add(` ${opts.inLink ? escapeLinkText(alt) : alt} `, true, alt);
+        continue;
+      }
       const alt = cleanInline(c.getAttribute('alt') || '');
       const src = absUrl(c.getAttribute('src') || c.getAttribute('data-src') || '', opts.baseUrl);
       if (src) add(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`, true, alt || 'image');
@@ -1012,9 +1111,9 @@ const normalizeLang = (raw: string, knownOnly: boolean): string => {
   return '';
 };
 
-const renderCodeBlock = (pre: Element, out: string[]): void => {
+const renderCodeBlock = (pre: Element, out: string[], opts: RenderOpts): void => {
   const codeEl = pre.querySelector('code') || pre;
-  const text = (codeEl.textContent || '').replace(/\r/g, '').replace(/^\n+|\n+$/g, '');
+  const text = codeText(codeEl, opts).replace(/\r/g, '').replace(/^\n+|\n+$/g, '');
   if (!text.trim()) return;
 
   // The language label lives wherever the site generator put it, and that is rarely one place:
@@ -1077,7 +1176,7 @@ const renderCodeBlock = (pre: Element, out: string[]): void => {
 // The table's own rows and cells. A descendant query also took those of a table nested in a cell: the inner rows came
 // out again as rows of the outer table and the inner cells widened the row holding it (P2A-013: 2 columns became 5).
 // Rows and cells under `hidden`, or inside a hidden row group, are left out (P2A-012).
-const hiddenUpTo = (el: Element, stop: Element, opts: RenderOpts): boolean => {
+const hiddenUpTo = (el: Element, stop: Element | null, opts: RenderOpts): boolean => {
   for (let e: Element | null = el; e && e !== stop; e = e.parentElement) if (isHiddenEl(e, opts)) return true;
   return false;
 };
@@ -1091,9 +1190,11 @@ const ownCaption = (tbl: Element, opts: RenderOpts): Element | undefined =>
 // A cell as inline Markdown on one line, rendered like any other inline content: links keep their target and code its
 // backticks (P2A-010: every row of a users list lost its link), whitespace collapses as a browser collapses it (a
 // pretty-printed template's indentation used to become `<br> value<br>`), a block child is spaced from its neighbours
-// and a <br> stays a line break (`<br>`). Images stay out of cells, as they always have.
+// and a <br> stays a line break (`<br>`). An image is written as its alt text: the image itself stays out of cells, as it
+// always has.
+const CELL = { includeImages: false, tight: true, imageAlt: true };
 const cellMd = (el: Element, opts: RenderOpts): string =>
-  renderInline(el, { ...opts, includeImages: false, tight: true })
+  renderInline(el, { ...opts, ...CELL })
     .replace(/ *\n */g, '\n')
     .replace(/^\n+|\n+$/g, '')
     .replace(/\|/g, '\\|')
@@ -1101,21 +1202,59 @@ const cellMd = (el: Element, opts: RenderOpts): string =>
     .replace(/[ \t]+/g, ' ')
     .trim();
 
+// The rows as a grid of slots, laid out as the HTML table model lays them: a cell spanning columns or rows leaves `null`
+// in the slots it covers, so the cells after it stay under their own headers (C6, codex: the cell after a colspan="2"
+// landed one column left). Spans are clamped as browsers clamp them (colspan 1..1000, rowspan 0..65534, 0 = to the last
+// row), and only the columns in which some cell starts are kept: `colspan="100"` on a details row means "the full
+// width", not a hundred columns. The extension pads a colspan with empty cells the same way (max 20, no rowspan).
+// The page decides the spans, so the slots they cover are budgeted: past SPAN_SLOTS the table gets the plain layout,
+// cells in source order, which is what earlier versions printed for every table.
+const SPAN_SLOTS = 100000;
+const tableGrid = (rows: Element[], opts: RenderOpts): Array<Array<Element | null>> => {
+  const grid: Array<Array<Element | null | undefined>> = rows.map(() => []);
+  const starts = new Set<number>();
+  let covered = 0;
+  for (let r = 0; r < rows.length; r++) {
+    let col = 0;
+    for (const cell of ownCells(rows[r], opts)) {
+      while (grid[r][col] !== undefined) col++;
+      const cs = Math.min(Math.max(parseInt(cell.getAttribute('colspan') || '', 10) || 1, 1), 1000);
+      const rsRaw = parseInt(cell.getAttribute('rowspan') || '', 10);
+      const rs = Math.min(rsRaw === 0 ? rows.length - r : Math.max(rsRaw || 1, 1), 65534, rows.length - r);
+      covered += cs * rs - 1;
+      if (covered > SPAN_SLOTS) return rows.map((tr) => ownCells(tr, opts));
+      for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) grid[r + dr][col + dc] = dr || dc ? null : cell;
+      starts.add(col);
+      col += cs;
+    }
+  }
+  const keep = [...starts].sort((a, b) => a - b);
+  return grid.map((row) => keep.map((c) => row[c] || null));
+};
+
 // A table nested in a cell, as lines of that cell: its caption, then one line per row, a header cell joined to the
-// data cell after it by ": " (the key/value tables of a details row read `k: v`) and other cells by " · ".
+// data cell after it by ": " (the key/value tables of a details row read `k: v`) and other cells by " · ". Under a header
+// row (two or more header cells and nothing else) an empty cell keeps its place, `a · · c`: dropping it moved every later
+// value under the header before it (C18, agy).
 const flattenTable = (tbl: Element, opts: RenderOpts, excludeEls?: ElementFilter): string => {
   const one = (el: Element): string => renderInline(el, opts, excludeEls).replace(/\s+/g, ' ').trim();
   const cap = ownCaption(tbl, opts);
   const lines = cap && one(cap) ? [one(cap)] : [];
-  for (const tr of ownRows(tbl, opts)) {
+  const grid = tableGrid(ownRows(tbl, opts), opts);
+  const head = (grid[0] || []).filter((c): c is Element => !!c);
+  const positional = head.length >= 2 && head.every((c) => c.tagName === 'TH');
+  for (const row of grid) {
+    const cells = row.map((c) => ({ t: c ? one(c) : '', th: c?.tagName === 'TH' }));
+    while (cells.length && !cells[cells.length - 1].t) cells.pop();
     let line = '';
+    let started = false;
     let afterTh = false;
-    for (const c of ownCells(tr, opts)) {
-      const t = one(c);
-      if (!t) continue;
-      if (line) line += afterTh && c.tagName === 'TD' ? (line.endsWith(':') ? ' ' : ': ') : ' · ';
+    for (const { t, th } of cells) {
+      if (!t && !positional) continue;
+      if (started) line += afterTh && !th ? (line.endsWith(':') ? ' ' : ': ') : ' · ';
       line += t;
-      afterTh = c.tagName === 'TH';
+      started = true;
+      afterTh = th;
     }
     if (line) lines.push(line);
   }
@@ -1127,9 +1266,9 @@ const renderTable = (tbl: Element, out: string[], opts: RenderOpts): void => {
   if (!rows.length) return;
   // <caption> text was never printed (grok, T109): it names the table.
   const capEl = ownCaption(tbl, opts);
-  const caption = capEl ? escapeBlockStart(renderInline(capEl, { ...opts, includeImages: false, tight: true }).replace(/\s+/g, ' ').trim()) : '';
+  const caption = capEl ? escapeBlockStart(renderInline(capEl, { ...opts, ...CELL }).replace(/\s+/g, ' ').trim()) : '';
   if (caption) out.push('', caption);
-  const data = rows.map((tr) => ownCells(tr, opts).map((c) => cellMd(c, opts)));
+  const data = tableGrid(rows, opts).map((row) => row.map((c) => (c ? cellMd(c, opts) : '')));
   const width = Math.max(...data.map((r) => r.length));
   const padded = data.map((r) => { while (r.length < width) r.push(''); return r; });
   out.push('');
