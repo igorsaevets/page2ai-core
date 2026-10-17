@@ -6,9 +6,14 @@ All notable changes to `@page2ai/core`.
 
 ### Changed (breaking)
 
-- **`fetchAndConvert` reads only the page you name** (BL-49). It no longer asks for `<url>.md` first, and its Accept header (`text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5`) no longer lists `text/markdown`, so Fumadocs, Mintlify, Vercel and Supabase answer with the HTML page instead of their own Markdown copy, which can be older than the page. On those sites the output is now converted from the page. A URL that is itself Markdown is still returned as is.
-- `FetchAndConvertOptions.tryMdSuffixFirst` is removed; a value passed anyway is ignored.
+- **`fetchAndConvert` reads only the page you name** (BL-49). It no longer asks for `<url>.md` first, and its Accept header is now the one Firefox sends when it opens a page, `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`: no `text/markdown` and no `text/plain`, because servers match those words and ignore q-values (measured 2026-10-17: `text/html,text/markdown;q=0` still got Markdown from platform.claude.com, and `text/html,text/plain` got it from fumadocs.dev). Fumadocs, Mintlify, Vercel, Supabase, Stripe and the Claude docs now answer with the HTML page instead of their own Markdown copy, which can be older than the page, and the output on those sites is converted from the page. Content shown only to agents (Mintlify `<Visibility for="agents">`) is no longer there, and what the page shows people is.
+- **Markdown sent for a page address is refused** with `FetchProtectionError` ("the server answered with Markdown ... for a page address"). The request asks for HTML as a browser does, so a server that still answers Markdown chose its copy by something else (User-Agent, a cache). 0.1.13 returned it as the page.
+- `FetchAndConvertOptions.tryMdSuffixFirst` is removed; a value passed anyway is ignored (TypeScript reports it on an object literal).
 - `ConversionResult.source` is `'html-parse' | 'markdown-response'`: `'md-suffix'` and `'content-negotiation'` are gone, and so is `'llms-txt'`, which nothing ever returned. The frontmatter of a Markdown response says `extractor_source: "markdown-response"`.
+
+### Fixed
+
+- **A Markdown or text file comes back as written.** A URL whose path names a Markdown or text file (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mdx`, `.txt`) is returned as is whether it is served as `text/markdown`, `text/x-markdown`, `text/plain` or `application/octet-stream`. In 0.1.13 a `README.md` from raw.githubusercontent.com (`text/plain`) went through the HTML parser and came out as one line that began in the middle of the file, with no heading and no code block: 3,035 characters of 10,940. An `llms.txt` you named lost its line breaks, and `text/x-markdown` and `application/octet-stream` were refused. A body with a NUL byte is refused as not text.
 
 ## 0.1.13 - 2026-10-16
 

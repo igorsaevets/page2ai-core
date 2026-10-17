@@ -9,7 +9,7 @@
 Works in Node.js (via linkedom) and in browsers.
 
 - **Node.js**: `htmlToMarkdown(html, opts)` or `fetchAndConvert(url, opts)` — zero external API calls, uses linkedom for parsing
-- **Browser**: exports `BrowserAdapter` and the `PageAdapter` interface; the full extract pipeline lives in the extension repo (planned for v0.2 migration)
+- **Browser**: exports `BrowserAdapter` and the `PageAdapter` interface; the full extract pipeline lives in the extension repo (a migration is planned)
 - **Zero data collection**: no telemetry, no analytics, no third-party calls
 - **MIT** licensed
 
@@ -63,7 +63,7 @@ Fetches a URL and converts it to Markdown. Async.
 - `opts.userAgent` (string) — custom user agent (default: `page2ai-core/0.1`)
 - ...all `htmlToMarkdown` options
 
-Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. It requests only the URL you pass: no `<url>.md` twin, no `llms.txt`, and the Accept header asks for HTML and never for Markdown, so a docs platform that negotiates (Fumadocs, Mintlify, Vercel, Supabase) answers with the page, not its own Markdown copy, which can be older than the page. A URL that is itself Markdown (a `.md` file served as `text/markdown`) is the page and is returned as is. `source` in the result says which way it came (`html-parse` or `markdown-response`), and `includeFrontmatter` applies on both. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
+Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. It requests only the URL you pass: no `<url>.md` twin, no `llms.txt`, and the Accept header is the one Firefox sends when it opens a page (`text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`), so a docs platform that negotiates (Fumadocs, Mintlify, Vercel, Supabase, Stripe, the Claude docs) answers with the page a person sees, not its own Markdown copy, which can be older than the page. A URL whose path names a Markdown or text file (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mdx`, `.txt`) is the page and is returned as is, whether the server sends it as `text/markdown`, `text/x-markdown`, `text/plain` (GitHub raw does) or `application/octet-stream`. Markdown sent for any other address is refused with a `FetchProtectionError`: the request asked for HTML, so that Markdown is the site's copy, not the page. `source` in the result says which way it came (`html-parse` or `markdown-response`), and `includeFrontmatter` applies on both. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
 
 The fetch refuses anything that is not public, on the URL and on every redirect hop, after DNS resolution: `localhost`, loopback `127.0.0.0/8` and `::1`, `0.0.0.0/8`, private `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, link-local `169.254.0.0/16` (cloud metadata) and `fe80::/10`, CGNAT `100.64.0.0/10` (this includes Tailscale addresses), IPv6 unique-local `fc00::/7`, IPv4-mapped IPv6, the unspecified address `::`, and the hostnames `metadata` and `metadata.google.internal`. So a page on your own intranet or tailnet cannot be fetched this way: fetch the HTML yourself and pass it to `htmlToMarkdown`. `assertSafeUrlResolved(url)` runs the same check without fetching, and `findIpBlockReason(address)` applies its address rule; both are exported.
 
@@ -89,9 +89,9 @@ The fetch refuses anything that is not public, on the URL and on every redirect 
 
 ## Roadmap
 
-- **v0.1** (current) — Node basic renderer, browser adapter interface published
-- **v0.2** — full port of `lib/core/html-to-md.ts` via PageAdapter, browser entry migrated from extension repo
-- **v0.3** — headless-browser adapter (Playwright or Puppeteer) for React/Vue/SPA rendering, profile auto-detection in Node path, structured-data extraction. Client-rendered pages (e.g. platform.claude.com) that ship a nearly empty `<div id="root">` from static HTML currently produce a graceful fallback error under v0.1 — the SPA adapter in v0.3 will handle them.
+- **Now** — Node basic renderer, browser adapter interface published; `fetchAndConvert` reads only the page (0.2.0, BL-49)
+- **Next** — full port of `lib/core/html-to-md.ts` via PageAdapter, browser entry migrated from extension repo
+- **Later** — headless-browser adapter (Playwright or Puppeteer) for React/Vue/SPA rendering, profile auto-detection in Node path, structured-data extraction. A client-rendered page that ships a nearly empty `<div id="root">` in its static HTML produces a graceful fallback error until then; the docs platforms above render on the server and convert today.
 
 ## Architecture
 
@@ -109,7 +109,7 @@ src/
 │   ├── index.ts
 │   ├── linkedom-adapter.ts
 │   └── basic-renderer.ts
-└── browser/          # BrowserAdapter (v0.1) + extract() (v0.2)
+└── browser/          # BrowserAdapter; extract() comes with the port
     ├── index.ts
     └── browser-adapter.ts
 ```
