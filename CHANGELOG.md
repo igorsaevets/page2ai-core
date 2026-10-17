@@ -2,13 +2,26 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.2.0 - 2026-10-17
+
+`htmlToMarkdown` is unchanged: on the 21 corpus pages its output is byte-identical to 0.1.13. What
+changes is what `fetchAndConvert` reads, measured live on 2026-10-17 with npm 0.1.13 against this
+release's code. On seven documentation platforms (Fumadocs, Mintlify, Vercel, Supabase, Cloudflare,
+Stripe, the Claude docs) 0.1.13 returned the site's `.md` copy of the page and 0.2.0 converts the
+page itself, 1,301 to 57,887 characters. Every heading and code block of those copies is in the
+0.2.0 output, except a «Related pages» list on Vercel, an «On this page» list and the page's JSON-LD
+on Cloudflare, and the `[#anchor]` suffixes of Fumadocs headings.
+On the Claude docs the copy was 160,435 characters with 36 headings and 6 code blocks; the page
+gives 57,887 with 59 and 20. A `README.md` from raw.githubusercontent.com now comes back as the file,
+11,408 of 11,408 characters (0.1.13: 3,468 characters, no heading), and an `llms.txt` you name keeps
+its 235 lines.
 
 ### Changed (breaking)
 
 - **`fetchAndConvert` reads only the page you name** (BL-49). It no longer asks for `<url>.md` first, and its Accept header is now the one Firefox sends when it opens a page, `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`: no `text/markdown` and no `text/plain`, because servers match those words and ignore q-values (measured 2026-10-17: `text/html,text/markdown;q=0` still got Markdown from platform.claude.com, and `text/html,text/plain` got it from fumadocs.dev). Fumadocs, Mintlify, Vercel, Supabase, Stripe and the Claude docs now answer with the HTML page instead of their own Markdown copy, which can be older than the page, and the output on those sites is converted from the page. Content shown only to agents (Mintlify `<Visibility for="agents">`) is no longer there, and what the page shows people is.
 - **Markdown sent for a page address is refused** with `FetchProtectionError` ("the server answered with Markdown ... for a page address"). The request asks for HTML as a browser does, so a server that still answers Markdown chose its copy by something else (User-Agent, a cache). 0.1.13 returned it as the page.
 - `FetchAndConvertOptions.tryMdSuffixFirst` is removed; a value passed anyway is ignored (TypeScript reports it on an object literal).
+- The official-Markdown settings are gone from the shared exports (`@page2ai/core/shared/types`, `@page2ai/core/shared/profiles`): `OfficialMarkdownMode`, `OfficialMarkdownResult`, the `ExtractorConfig` fields `officialMarkdownMode`, `trustedOfficialMarkdownHosts` and `officialMarkdownMinRatio` (and so the profiles' `officialMarkdownMode`), the `ExtractStatus` value `'official-md'`, and `ExtractResult.officialMarkdownUrl` and `officialMarkdownRatio`. No code in core read them; they described the extension's own lookup, which its next release removes too.
 - `ConversionResult.source` is `'html-parse' | 'markdown-response'`: `'md-suffix'` and `'content-negotiation'` are gone, and so is `'llms-txt'`, which nothing ever returned. The frontmatter of a Markdown response says `extractor_source: "markdown-response"`.
 
 ### Fixed

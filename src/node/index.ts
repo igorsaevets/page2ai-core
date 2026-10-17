@@ -4,7 +4,7 @@
 //   htmlToMarkdown(html, opts?)  — convert an HTML string to Markdown
 //   fetchAndConvert(url, opts?)  — SSRF-guarded fetch + convert
 //
-// v0.1 SCOPE: basic renderer only (headings, paragraphs, lists, links, images,
+// SCOPE: basic renderer only (headings, paragraphs, lists, links, images,
 // code blocks, tables, frontmatter, blockquotes, inline formatting) + STATIC
 // tab discovery (aria-controls / role=tablist) that emits '## Tab: {label}'
 // sections instead of concatenating panels. No interactive tab-click, no
