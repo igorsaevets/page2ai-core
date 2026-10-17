@@ -141,7 +141,7 @@ describe('BL-42: table cells that moved or lost their value', () => {
       '| A | B | C |\n| --- | --- | --- |\n| k: v |  | tail |'],
     ['a rowspan keeps the next row under its headers', page('<table><tr><th>Group</th><th>Item</th></tr><tr><td rowspan="2">fruit</td><td>apple</td></tr><tr><td>pear</td></tr></table>'),
       '| Group | Item |\n| --- | --- |\n| fruit | apple |\n|  | pear |'],
-    ['rowspan="0" spans to the last row', page('<table><tr><th>A</th><th>B</th></tr><tr><td rowspan="0">x</td><td>1</td></tr><tr><td>2</td></tr><tr><td>3</td></tr></table>'),
+    ['rowspan="0" spans the rest of its row group (here the whole table)', page('<table><tr><th>A</th><th>B</th></tr><tr><td rowspan="0">x</td><td>1</td></tr><tr><td>2</td></tr><tr><td>3</td></tr></table>'),
       '| A | B |\n| --- | --- |\n| x | 1 |\n|  | 2 |\n|  | 3 |'],
     ['colspan="100" on a details row is the full width, not a hundred columns', page('<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr><tr><td colspan="100">note</td></tr></table>'),
       '| A | B |\n| --- | --- |\n| 1 | 2 |\n| note |  |'],
@@ -177,5 +177,69 @@ describe('BL-42 (C5 class): a <br> in code is a line break', () => {
 
   it('outside a cell, includeImages: false still leaves an image-only link out (an alt name wrote `[User avatar](…)` before every phpBB author)', () => {
     expect(md(page('<p>a</p><p><a href="/"><img src="/logo.png" alt="Home"></a></p>'), { includeImages: false })).toBe('a');
+  });
+});
+
+// T124 panel (codex, grokbuild, ocmimo26flashfree, ocspark13go, mimov26pro, agy38flash) on main b4cb412; every input was
+// run on that build first (audits/T125-2026-10-16/scripts/panel_claims_t124.mjs) and the disputed table layouts in
+// Chromium 149 (browser_layout_check.py there).
+describe('BL-42 (T124 panel): hidden text in code, names and the root', () => {
+  it.each([
+    ['a hidden <code> in a <pre> does not replace the visible text', page('<pre>VISIBLE<code hidden>SECRET</code>TAIL</pre>'), '```\nVISIBLETAIL\n```'],
+    ['a <code> under a hidden span is passed over', page('<pre><span hidden><code>HIDDEN</code></span><code>SHOWN</code></pre>'), '```\nSHOWN\n```'],
+    ['a hidden <li> inside a hidden block stays out with its code', page('<p>Shown</p><div hidden><ul><li hidden><pre>SECRET</pre></li></ul></div>'), 'Shown'],
+    ['a <style> in code is not code', page('<pre><code>a<style>.x{}</style>b</code></pre>'), '```\nab\n```'],
+    ['a hidden S: span or tab panel inside code is not code', page('<p><code>a<span hidden id="S:0">X</span><span hidden role="tabpanel">Y</span>b</code></p>'), '`ab`'],
+    ['a hidden <br> in code breaks no line', page('<p><code>a<br hidden>b</code></p>'), '`ab`'],
+    ['a link is not named by hidden text of any kind', page('<p>Shown <a href="/u"><span hidden role="tabpanel">SECRET</span></a></p>'), 'Shown'],
+    ['nor by a <noscript> or <canvas> fallback, nor an SVG <desc>; the SVG <title> still names it',
+      page('<p>A <a href="/a"><noscript>N</noscript></a>B <a href="/b"><canvas>C</canvas></a>C <a href="/c"><svg><desc>D</desc><title>Docs</title></svg></a></p>'),
+      'A B C [Docs](https://example.test/c)'],
+    ['a tab label leaves out hidden text',
+      page('<div><div role="tablist"><button role="tab" aria-controls="p1">One<span hidden>SECRET</span></button><button role="tab" aria-controls="p2">Two</button></div><div role="tabpanel" id="p1">A</div><div role="tabpanel" id="p2">B</div></div>'),
+      '### Tab: One\n\nA\n\n### Tab: Two\n\nB'],
+    ['a tab panel outside the content root is not printed (one panel left is no tab group)',
+      '<html><body><main><div role="tablist"><button aria-controls="p1">A</button><button aria-controls="p2">B</button></div><div id="p1"><p>one</p></div></main><div id="p2" hidden><p>SECRET</p></div></body></html>',
+      'A B\n\none'],
+    ['only a <div> or <table> with a React segment id is a segment, the id ending in S: and a hex number',
+      page('<p>Shown</p><span hidden id="S:0">A</span><div hidden id="S:evil">B</div><div hidden id="app-S:1f">C</div>'), 'Shown\n\nC'],
+    ['a parsed React table segment, <tbody> inserted', page('<p>Shown</p><table hidden><tbody><tr id="S:2"><td>Late cell</td></tr></tbody></table>'),
+      'Shown\n\n| Late cell |\n| --- |'],
+    ['a <main> in a hidden tab panel does not take the root from the visible one',
+      '<html><body><div hidden role="tabpanel"><main><p>SECRET</p></main></div><main><p>VISIBLE</p></main></body></html>', 'VISIBLE'],
+    ['nor an until-found <main>', '<html><body><main hidden="until-found"><p>FIND</p></main><main><p>VISIBLE</p></main></body></html>', 'VISIBLE'],
+    ['nor a <main> in a React segment while a visible one exists',
+      '<html><body><div hidden id="S:0"><main><p>LATE</p></main></div><main><p>Real</p></main></body></html>', 'Real'],
+    ['a page whose only <main> is in a hidden tab panel keeps the whole body',
+      '<html><body><p>Intro</p><div hidden role="tabpanel"><main><p>Panel</p></main></div></body></html>', 'Intro\n\nPanel'],
+    ['a <br> in a heading is a space, in its text or its code', page('<h2>Run <code>a<br>b</code> now</h2><h3>One<br>Two</h3>'), '## Run `a` `b` now\n\n### One Two'],
+    ['an aria-hidden image adds nothing to its cell', page('<table><tr><th>Status</th></tr><tr><td><img src="/b.png" alt="bullet" aria-hidden="true"> Active</td></tr></table>'),
+      '| Status |\n| --- |\n| Active |'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(html)).toBe(expected);
+  });
+});
+
+describe('BL-42 (T124 panel): a span ends with its row group', () => {
+  it.each([
+    ['a <thead> rowspan="2" does not reach into the <tbody>',
+      page('<table><thead><tr><th rowspan="2">A</th><th>B</th></tr></thead><tbody><tr><td>x</td><td>y</td></tr></tbody></table>'),
+      '| A | B |\n| --- | --- |\n| x | y |'],
+    ['rowspan="0" stops at the end of its <tbody>',
+      page('<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td rowspan="0">X</td><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>Y</td><td>3</td></tr></tbody></table>'),
+      '| A | B |\n| --- | --- |\n| X | 1 |\n|  | 2 |\n| Y | 3 |'],
+    ['a <thead> rowspan="0" spans only the <thead>',
+      page('<table><thead><tr><th rowspan="0">H</th><th>A</th></tr></thead><tbody><tr><td>b</td></tr><tr><td>c</td></tr></tbody></table>'),
+      '| H | A |\n| --- | --- |\n| b |  |\n| c |  |'],
+    ['a rowspan covers the next shown row: a hidden row takes no part, as Chromium lays it out',
+      page('<table><tr><th>A</th><th>B</th></tr><tr><td rowspan="2">X</td><td>1</td></tr><tr hidden><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>'),
+      '| A | B |  |\n| --- | --- | --- |\n| X | 1 |  |\n|  | 3 | 4 |'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(html)).toBe(expected);
+  });
+
+  it('under the slot budget the same spans get the grid, so the budget test above cannot pass without one', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => `<tr><td colspan="1000">r${i}</td><td>x</td></tr>`).join('');
+    expect(md(page(`<table><tr><th>A</th><th>B</th></tr>${rows}</table>`)).split('\n')[2]).toBe('| r0 |  | x |');
   });
 });
