@@ -78,3 +78,39 @@ describe('fetchAndConvert — content negotiation', () => {
     expect(result.markdown).toContain('# Real HTML');
   });
 });
+
+// T121 panel (codex), measured on npm 0.1.12: both Markdown fast paths prepended the frontmatter
+// whatever includeFrontmatter said, and counted only the body, while htmlToMarkdown counts the
+// whole returned Markdown. The MCP server's include_frontmatter: false was ignored on every docs
+// site that answers text/markdown.
+describe('fetchAndConvert: the Markdown fast paths honour includeFrontmatter', () => {
+  const mockMdSuffix = (): void => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.endsWith('.md')) {
+          return new Response(PAGE_MARKDOWN, { status: 200, headers: { 'content-type': 'text/markdown' } });
+        }
+        return new Response(PAGE_HTML, { status: 200, headers: { 'content-type': 'text/html' } });
+      }),
+    );
+  };
+
+  it.each([
+    ['content-negotiation', (): void => mockFetch(PAGE_MARKDOWN, 'text/markdown')],
+    ['md-suffix', mockMdSuffix],
+  ])('%s: no frontmatter when asked, and charCount is the returned length', async (source, mock) => {
+    mock();
+    const off = await fetchAndConvert('https://example.com/docs/page', { includeFrontmatter: false });
+    expect(off.source).toBe(source);
+    expect(off.markdown).toBe(PAGE_MARKDOWN.trim() + '\n');
+    expect(off.charCount).toBe(off.markdown.length);
+
+    mock();
+    const on = await fetchAndConvert('https://example.com/docs/page');
+    expect(on.markdown.startsWith('---\n')).toBe(true);
+    expect(on.markdown).toContain(`extractor_source: "${source}"`);
+    expect(on.charCount).toBe(on.markdown.length);
+  });
+});

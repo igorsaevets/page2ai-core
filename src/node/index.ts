@@ -166,6 +166,21 @@ const wrapMdWithFrontmatter = (
   return fm.join('\n') + raw.replace(/^﻿/, '').trim() + '\n';
 };
 
+// The two Markdown fast paths below honour includeFrontmatter and count characters the way
+// htmlToMarkdown does (the whole returned Markdown). Until 0.1.12 they always prepended the
+// frontmatter and counted only the body, so `include_frontmatter: false` in the MCP server was
+// ignored on every docs site that answers text/markdown (T121 panel, codex).
+const mdResponseMarkdown = (
+  raw: string,
+  url: string,
+  title: string,
+  via: 'md-suffix' | 'content-negotiation',
+  opts: FetchAndConvertOptions,
+): string =>
+  (opts.includeFrontmatter ?? true)
+    ? wrapMdWithFrontmatter(raw, url, title, via)
+    : raw.replace(/^﻿/, '').trim() + '\n';
+
 // A Markdown body must never reach the HTML parser. linkedom will happily accept
 // it, find no <article> or <main>, and return an empty document, which reads as
 // "extraction failed" when in fact the server handed over exactly what was asked
@@ -194,11 +209,12 @@ const tryMdSuffix = async (
     // Cheap sanity: markdown response should not look like HTML
     if (looksLikeHtml(resp.text)) return null;
     const title = (resp.text.match(/^#\s+(.+)$/m)?.[1] || '').trim();
+    const markdown = mdResponseMarkdown(resp.text, resp.finalUrl, title, 'md-suffix', opts);
     return {
-      markdown: wrapMdWithFrontmatter(resp.text, resp.finalUrl, title, 'md-suffix'),
+      markdown,
       title,
       baseUrl: resp.finalUrl,
-      charCount: resp.text.length,
+      charCount: markdown.length,
       extractedAt: new Date().toISOString(),
       source: 'md-suffix',
     };
@@ -231,12 +247,12 @@ export const fetchAndConvert = async (
   if (MARKDOWN_CONTENT_TYPE.test(resp.contentType) && !looksLikeHtml(resp.text)) {
     const raw = resp.text.replace(/^﻿/, '').trim();
     const title = (raw.match(/^#\s+(.+)$/m)?.[1] || '').trim();
-    const markdown = wrapMdWithFrontmatter(raw, resp.finalUrl, title, 'content-negotiation');
+    const markdown = mdResponseMarkdown(raw, resp.finalUrl, title, 'content-negotiation', opts);
     return {
       markdown,
       title,
       baseUrl: resp.finalUrl,
-      charCount: raw.length,
+      charCount: markdown.length,
       extractedAt: new Date().toISOString(),
       source: 'content-negotiation',
     };
