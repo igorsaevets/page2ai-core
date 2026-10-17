@@ -49,8 +49,8 @@ Converts an HTML string to Markdown. Synchronous.
 - `opts.baseUrl` (string) — URL used to resolve relative links (default: `'about:blank'`)
 - `opts.profile` (string) — accepted, but **ignored by the Node build in this version**: `'dashboard'`, `'marketing'` and the rest produce the same output here. The profiles switch the browser extension's live-page pipeline (clicking tabs, waiting for lazy content), which the Node renderer does not run
 - `opts.includeFrontmatter` (boolean) — emit YAML frontmatter block (default: `true`)
-- `opts.includeImages` (boolean) — emit image links (default: `true`). Images inside table cells are left out either way
-- `opts.includeHidden` (boolean) — also convert content under the HTML `hidden` attribute, which a browser does not show (default: `false`). Tab panels, `hidden="until-found"` sections, hidden blocks that hold code and React streaming segments are converted either way
+- `opts.includeImages` (boolean) — emit image links (default: `true`). Inside a table cell an image is written as its alt text either way, and an image with an empty alt adds nothing
+- `opts.includeHidden` (boolean) — also convert content under the HTML `hidden` attribute, which a browser does not show (default: `false`). Tab panels, `hidden="until-found"` sections and React streaming segments are converted either way, and a hidden block that holds code contributes its code blocks and nothing else. A hidden `<main>` is never taken as the page's main content
 
 Returns `{ markdown, title, baseUrl, charCount, extractedAt }`. When nothing can be extracted the Markdown says so with `<!-- AI: page has no extractable body content -->` instead of coming back empty.
 
@@ -72,14 +72,14 @@ The fetch refuses anything that is not public, on the URL and on every redirect 
 
 - Parses HTML with [linkedom](https://github.com/WebReflection/linkedom) (fast, browser-DOM-fidelity, no layout engine)
 - Picks a content root: `<main>` (else `[role="main"]`, else `<body>`), replaced by its largest `<article>` when that article holds at least half of the root's text or is three times larger than every other `<article>`. Text outside the root (beside `<main>`, or beside such an article) is not converted
-- Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`), blockquotes, definition lists (`**term**` then `: definition`), inline formatting (bold, italic, code). Text sitting directly in a `<div>`, `<section>` or `<span>` is kept as its own paragraph, so dashboards and admin pages built from bare `<div>`s convert too
+- Emits: headings (`# `), paragraphs, lists (ordered/unordered, nested), links `[text](url)`, images `![alt](src)`, code blocks (with language tag when detectable), tables (`| a | b |`; a cell spanning columns or rows leaves empty cells, so every value stays under its header), blockquotes, definition lists (`**term**` then `: definition`), inline formatting (bold, italic, code). Text sitting directly in a `<div>`, `<section>` or `<span>` is kept as its own paragraph, so dashboards and admin pages built from bare `<div>`s convert too
 - Extracts metadata into YAML frontmatter: `title`, `source`, `captured_at`, `language`, `description`, `canonical`, `og_title`, `og_description`, `author`, `published`, `extractor`, `extractor_version`
 
 ## What it does NOT do (v0.1)
 
 - No tab/dropdown expansion (browser-only interactive machinery)
 - No lazy-load activation (Node has no runtime images)
-- No `<details>` auto-expansion
+- No `<details>` clicking, and none is needed: the body of a closed `<details>` is in the HTML and is converted with the rest of the page
 - No computed-style-based visibility filtering (linkedom has no layout engine)
 - No badge detection via font weight
 - No shadow DOM traversal (linkedom has no shadow DOM support)
