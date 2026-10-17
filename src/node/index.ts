@@ -82,23 +82,80 @@ const adoptAfterBody = (doc: Document): Document => {
 // (the benchmark's docs.anthropic.com page: 212 characters of "Loading..." for a 12,270-character article, BL-39; 7 of
 // 16 fresh Next.js / Mintlify / Remix pages stream, T126). So the calls are replayed in document order, as a browser
 // runs them: $RC, and $RR (the same once stylesheets load), fill a boundary; $RS moves a segment onto its
-// `<template id="P:1">` placeholder; $RX (client rendering) keeps the fallback. A call is followed only on the markup
-// React writes for it, a hidden segment and a pending boundary closed by its own comment, so a page that merely
-// mentions `$RC(` moves nothing. Chromium running only a page's inline scripts gave the converter the same page
-// (8 of 8 pages, T126). Ids as React prints them: an optional identifierPrefix, then B:, S: or P: and hex.
+// `<template id="P:1">` placeholder; $RX (client rendering) keeps the fallback. Chromium running only a page's inline
+// scripts gave the converter the same page (8 of 8 pages, T126).
+//
+// A call counts only where a browser would run it (T127, the T126 panel; each case run in Chromium 149 with React's
+// own runtime): call text in a `type="application/json"` script, a comment, a string or a <noscript> had moved a hidden
+// segment into the root. So: a classic script (no `src`, no `nomodule`, a JavaScript `type` or none, outside <template>
+// and <noscript>; React never writes a module script, and one runs after the classic ones), the call at a statement
+// start as React writes it (all 23 calls on the 8 streaming pages begin the script or follow `;`), segment and boundary
+// parsed before the script, as getElementById sees them when it runs, and only on markup React writes: one of its
+// segment wrappers and a pending boundary closed by its own comment. What a script does is not checked: `$RC` defined
+// as a no-op, or not at all, still moves segments; no real page streams without React's runtime. The external runtime
+// (`<template data-rci>`, `unstable_externalRuntimeSrc`) is not replayed: none of the 16 pages uses it.
+// Ids as React prints them: an optional identifierPrefix, then B:, S: or P: and hex.
 const FILL_BOUNDARY = /\$R[CR]\("([^"\\]*B:[0-9a-f]+)","([^"\\]*S:[0-9a-f]+)"/;
 const FILL_PLACEHOLDER = /\$RS\("([^"\\]*S:[0-9a-f]+)","([^"\\]*P:[0-9a-f]+)"/;
-const STREAM_CALL = new RegExp(`${FILL_BOUNDARY.source}|${FILL_PLACEHOLDER.source}`, 'g');
+const STREAM_CALL = new RegExp(`(?<![^;])(?:${FILL_BOUNDARY.source}|${FILL_PLACEHOLDER.source})`, 'g');
 const BOUNDARY_PENDING = /^\$[?~]$/; // `$~` = queued by React 19.2's batched reveal
 const BOUNDARY_START = /^(?:\$[?~!]?|&)$/; // `&` = an <Activity> boundary
+const REACT_ID = /[BSP]:[0-9a-f]+$/;
+// The HTML standard's JavaScript MIME types ("JavaScript MIME type essence match", no parameters).
+const JS_TYPE = /^((application|text)\/(x-)?(ecma|java)script|text\/(javascript1\.[0-5]|jscript|livescript))$/i;
 
-const isSegment = (el: Element | null): el is Element =>
-  !!el && (el.hasAttribute('hidden') || !!el.closest('table')?.hasAttribute('hidden'));
+const runsAsClassicScript = (script: Element): boolean => {
+  if (script.hasAttribute('src') || script.hasAttribute('nomodule')) return false;
+  if (script.parentElement?.closest('template, noscript')) return false;
+  const type = script.getAttribute('type');
+  if (type !== null) return type === '' || JS_TYPE.test(type.trim());
+  const language = script.getAttribute('language');
+  return !language || JS_TYPE.test(`text/${language}`);
+};
 
-const fillBoundary = (doc: Document, boundaryId: string, segmentId: string): void => {
-  const segment = doc.getElementById(segmentId);
+// React's segment wrappers (ReactFizzConfigDOM.js, writeStartSegment): `<div hidden>`, `<svg>` and `<math>` with
+// aria-hidden="true" and display:none, `<table hidden>`, or the <tbody>, <tr> or <colgroup> of a `<table hidden>`.
+const isSegment = (el: Element | null): el is Element => {
+  if (!el) return false;
+  const tag = el.tagName.toUpperCase();
+  if (tag === 'DIV' || tag === 'TABLE') return el.hasAttribute('hidden');
+  if (tag === 'SVG' || tag === 'MATH') {
+    return el.getAttribute('aria-hidden') === 'true' && /display:\s*none/.test(el.getAttribute('style') || '');
+  }
+  return /^(?:TBODY|TR|COLGROUP)$/.test(tag) && !!el.closest('table')?.hasAttribute('hidden');
+};
+
+// One walk of the document, on the first call: each element's place in parse order, and the elements carrying React's
+// ids. getElementById walks the tree on linkedom, so a lookup per call made a page of 16,000 calls take 9 s (T127;
+// codex, T126 panel), and it also finds ids inside <template> contents, which a browser's does not; querySelectorAll
+// does not enter them.
+interface StreamScan { order: Map<Element, number>; ids: Map<string, Element[]> }
+const scanDocument = (doc: Document): StreamScan => {
+  const order = new Map<Element, number>();
+  const ids = new Map<string, Element[]>();
+  for (const el of doc.querySelectorAll('*')) {
+    order.set(el, order.size);
+    if (!el.id || !REACT_ID.test(el.id)) continue;
+    const list = ids.get(el.id);
+    if (list) list.push(el);
+    else ids.set(el.id, [el]);
+  }
+  return { order, ids };
+};
+
+// getElementById as the script sees it when it runs: the first element with that id still in the document, if the
+// parser had reached it before the script.
+const lookup = (scan: StreamScan, id: string, script: Element): Element | null => {
+  const list = scan.ids.get(id);
+  while (list?.length && !list[0].isConnected) list.shift();
+  const el = list?.[0];
+  return el && (scan.order.get(el) ?? Infinity) < (scan.order.get(script) ?? -1) ? el : null;
+};
+
+const fillBoundary = (scan: StreamScan, script: Element, boundaryId: string, segmentId: string): void => {
+  const segment = lookup(scan, segmentId, script);
   if (!isSegment(segment)) return;
-  const marker = doc.getElementById(boundaryId);
+  const marker = lookup(scan, boundaryId, script);
   if (!marker) {
     segment.remove(); // React's $RC drops a segment whose boundary is gone: the browser never shows it
     return;
@@ -127,23 +184,30 @@ const fillBoundary = (doc: Document, boundaryId: string, segmentId: string): voi
   (open as Comment).data = '$';
 };
 
-const fillPlaceholder = (doc: Document, segmentId: string, placeholderId: string): void => {
-  const segment = doc.getElementById(segmentId);
-  const placeholder = doc.getElementById(placeholderId);
-  const parent = placeholder?.parentNode;
-  if (!isSegment(segment) || placeholder?.tagName !== 'TEMPLATE' || !parent || segment.contains(placeholder)) return;
+const fillPlaceholder = (scan: StreamScan, script: Element, segmentId: string, placeholderId: string): void => {
+  const segment = lookup(scan, segmentId, script);
+  if (!isSegment(segment)) return;
+  const placeholder = lookup(scan, placeholderId, script);
+  if (!placeholder) {
+    segment.remove(); // React's $RS removes the segment, then fails on the missing placeholder
+    return;
+  }
+  const parent = placeholder.parentNode;
+  if (placeholder.tagName !== 'TEMPLATE' || !parent || segment.contains(placeholder)) return;
   segment.remove();
   while (segment.firstChild) parent.insertBefore(segment.firstChild, placeholder);
   placeholder.remove();
 };
 
 const revealStreamedSegments = (doc: Document): Document => {
+  let scan: StreamScan | undefined;
   for (const script of [...doc.querySelectorAll('script')]) {
     const text = script.textContent || '';
-    if (!text.includes('$R')) continue;
+    if (!text.includes('$R') || !runsAsClassicScript(script)) continue;
     for (const m of text.matchAll(STREAM_CALL)) {
-      if (m[1]) fillBoundary(doc, m[1], m[2]);
-      else fillPlaceholder(doc, m[3], m[4]);
+      scan ??= scanDocument(doc);
+      if (m[1]) fillBoundary(scan, script, m[1], m[2]);
+      else fillPlaceholder(scan, script, m[3], m[4]);
     }
   }
   return doc;
