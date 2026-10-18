@@ -83,6 +83,7 @@ export const renderBasicMarkdown = (
   adapter: PageAdapter,
   opts: RenderOpts,
 ): string => {
+  resetButtonCaches();
   const parts: string[] = [];
 
   const root = pickContentRoot(doc, opts);
@@ -763,29 +764,38 @@ const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') |
 // content: it is left out, as the form controls in SKIP_TAGS are (P2A-019: Mintlify, Vercel and the Claude docs printed
 // "Copy page" twice, the code-sample switcher and an icon-font glyph). Kept where the page's own text is in the button,
 // each case measured on the T142 corpus against a build that left every button out:
-// - inside a link, which is named by it;
+// - beside a link: inside one, which is named by it, or holding one (the page's navigation written in a button);
 // - holding block content (an accordion's heading written inside the button, a card with a paragraph, code) or an
 //   image that is not aria-hidden (a zoomable image, a video card; a framework picker's icons are aria-hidden);
-// - holding all the text of its table cell or heading: a sortable column's name, a row group's label, an accordion's
-//   question. Beside the cell's or heading's own words it is judged like any other button, so an anchor-link button
-//   after a heading's text ("Copy Anchor Link") stays out;
+// - holding all the text of its table cell, heading or definition term: a sortable column's name, a row group's label,
+//   an accordion's question (also under `role="heading"`, the WAI-ARIA accordion pattern). Beside the box's own words it
+//   is judged like any other button: the words of a link are not running text, so an anchor-link button after a
+//   heading's linked text ("Copy Anchor Link") stays out;
 // - a disclosure (aria-expanded, no popup): its label names the section it opens, a changelog's "Fixes" and
 //   "Improvements" above their lists;
+// - an accessible name that is an action on the visible label: neon.com's button showing `npx neon@latest init` is named
+//   "Copy command: npx neon@latest init", so the label is what the action applies to (namesItsLabel);
 // - in running text: a tooltip on a word of a sentence ("stored in your documentation repository.");
+// - alone in its run, right before a block with words: an accordion question written with neither aria-expanded nor a
+//   heading (`<button class="accordion">Question?</button><div class="panel"><p>Answer.</p></div>`, the W3Schools
+//   accordion; T144, the T143 panel's shapes);
 // - the selected tab of a tab list whose panels the tab discovery did not find: it names the panel the page shows,
 //   while the other tabs name panels that are not in it ("cURL CLI Python ... Ruby" above one Python sample).
 // A menu, listbox or dialog opener (aria-haspopup) is a control even when it is a disclosure.
 const BLOCK_IN_BUTTON = 'h1, h2, h3, h4, h5, h6, p, ul, ol, dl, table, pre, code, blockquote';
+const LABEL_BOX = 'td, th, h1, h2, h3, h4, h5, h6, dt, [role="heading"]';
 const isControlButton = (el: Element, opts: RenderOpts): boolean => {
   if (el.tagName !== 'BUTTON') return false;
-  if (el.closest('a[href]') || el.querySelector(BLOCK_IN_BUTTON)) return false;
+  if (el.closest('a[href]') || el.querySelector(`${BLOCK_IN_BUTTON}, a[href]`)) return false;
   if ([...el.querySelectorAll('img, picture')].some((i) => !i.closest('[aria-hidden="true"]'))) return false;
-  const box = el.closest('td, th, h1, h2, h3, h4, h5, h6');
-  if (box && !hasWords(box, opts, true)) return false;
+  const box = el.closest(LABEL_BOX);
+  if (box && !boxHasWords(box, opts)) return false;
   if ((el.getAttribute('role') || '').toLowerCase() === 'tab') return el.getAttribute('aria-selected') !== 'true';
   if ((el.getAttribute('aria-haspopup') || 'false').toLowerCase() !== 'false') return true;
-  if (el.hasAttribute('aria-expanded')) return false;
-  return !inRunningText(el, opts);
+  if (el.hasAttribute('aria-expanded') || namesItsLabel(el, opts)) return false;
+  const run = runOf(el, opts);
+  if (run.words) return false;
+  return !(run.pieces === 1 && isPanel(run.next, opts) && anyWords(el, opts));
 };
 
 // Letters or digits outside buttons (and outside links unless `links`), skipped and hidden elements left out.
@@ -797,24 +807,138 @@ const hasWords = (n: Node, opts: RenderOpts, links: boolean): boolean => {
   return [...e.childNodes].some((c) => hasWords(c, opts, links));
 };
 
-// Words of the sentence a phrasing element sits in. The run reaches up through phrasing ancestors to the first block
-// and spans that block's children between the block children on either side. Words count only outside buttons and
-// links: a row of controls and links (a toolbar, a search box beside the nav links) is not a sentence.
-const isPhrasingEl = (e: Element): boolean => PHRASING_TAGS.has(e.tagName) || e.tagName.includes('-');
-const inRunningText = (el: Element, opts: RenderOpts): boolean => {
-  let child: Element = el;
-  let parent = el.parentElement;
-  while (parent && isPhrasingEl(parent)) { child = parent; parent = parent.parentElement; }
-  if (!parent) return false;
-  const isBlock = (n: Node): boolean =>
-    n.nodeType === 1 && !isPhrasingEl(n as Element) && !SKIP_TAGS.has((n as Element).tagName);
-  const kids = [...parent.childNodes];
-  const at = kids.indexOf(child);
-  let lo = at;
-  while (lo > 0 && !isBlock(kids[lo - 1])) lo--;
-  let hi = at;
-  while (hi < kids.length - 1 && !isBlock(kids[hi + 1])) hi++;
-  return kids.slice(lo, hi + 1).some((n) => hasWords(n, opts, false));
+// Letters or digits anywhere in a node, buttons and links included; skipped and hidden elements left out.
+const anyWords = (n: Node, opts: RenderOpts): boolean => {
+  if (n.nodeType === 3 /* TEXT_NODE */) return /[\p{L}\p{N}]/u.test(n.textContent || '');
+  if (n.nodeType !== 1 /* ELEMENT_NODE */) return false;
+  const e = n as Element;
+  if (SKIP_TAGS.has(e.tagName) || underHiddenAttr(e, opts)) return false;
+  return [...e.childNodes].some((c) => anyWords(c, opts));
+};
+
+// The accessible name is an action on the visible label, written "<action>: <label>"; the label holds a letter and leaves
+// out aria-hidden parts (neon's `$` prompt). Not "Copy page" named "Copy page", not MUI's pagination ("Go to page 2" on
+// a button showing 2) and not "Click to copy" on a "Copy" button: no colon before the label.
+const namesItsLabel = (el: Element, opts: RenderOpts): boolean => {
+  const name = collapseWs(el.getAttribute('aria-label') || '').trim().toLowerCase();
+  if (!name) return false;
+  let s = '';
+  const walk = (n: Node): void => {
+    if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
+    if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
+    const e = n as Element;
+    if (SKIP_TAGS.has(e.tagName) || underHiddenAttr(e, opts) || isAriaHidden(e)) return;
+    for (const c of e.childNodes) walk(c);
+  };
+  for (const c of el.childNodes) walk(c);
+  const label = collapseWs(s).trim().toLowerCase();
+  return /\p{L}/u.test(label) && name.endsWith(label) && /\p{L}.*:\s*$/u.test(name.slice(0, name.length - label.length));
+};
+
+// The run of phrasing content a button sits in, as walkNodes forms it, and what isControlButton asks about it: letters or
+// digits outside buttons and links (running text: a row of controls and links, a toolbar or a search box beside the nav
+// links, is not a sentence), its word-bearing pieces (each button, link and text node once, capped at 2) and the block
+// right after it. Computed once per container and render: a picker or toolbar of thousands of sibling buttons scanned
+// its whole run for each button, and 3,000 such buttons took 1.1 to 5.7 s in 0.2.1 (0.2.0: 33 to 62 ms; T144).
+type Run = { words: boolean; pieces: number; next: Node | null };
+const NO_RUN: Run = { words: false, pieces: 0, next: null };
+let ownTextCache = new WeakMap<Element, boolean>();
+let runCache = new WeakMap<Element, Map<Node, Run>>();
+let boxCache = new WeakMap<Element, boolean>();
+// Per render: the caches hold answers about one document as renderBasicMarkdown sees it.
+const resetButtonCaches = (): void => {
+  ownTextCache = new WeakMap();
+  runCache = new WeakMap();
+  boxCache = new WeakMap();
+};
+
+// A non-blank text node among an element's children: walkNodes' parentHasText, which makes a custom element phrasing.
+const hasOwnText = (e: Element): boolean => {
+  let v = ownTextCache.get(e);
+  if (v === undefined) ownTextCache.set(e, (v = [...e.childNodes].some((n) => n.nodeType === 3 && /\S/.test(n.textContent || ''))));
+  return v;
+};
+
+const boxHasWords = (box: Element, opts: RenderOpts): boolean => {
+  let v = boxCache.get(box);
+  if (v === undefined) boxCache.set(box, (v = hasWords(box, opts, true)));
+  return v;
+};
+
+// The element whose children hold the button's run (box) and the child holding the button (member). Phrasing ancestors
+// are in the run. A custom element is phrasing only where its container has text of its own, as walkNodes decides;
+// otherwise it is walked as a container and the run lies inside it, so a card's action row is not read as part of the
+// card's text (`<mat-card>...<mat-card-actions><button>LIKE</button>`, T143 panel: grok, goog38flash).
+const runPlace = (el: Element): { box: Element; member: Element } | null => {
+  const chain: Element[] = [];
+  let e: Element | null = el;
+  while (e && (PHRASING_TAGS.has(e.tagName) || e.tagName.includes('-'))) { chain.push(e); e = e.parentElement; }
+  if (!e) return null;
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (PHRASING_TAGS.has(chain[i].tagName) || hasOwnText(e)) return { box: e, member: chain[i] };
+    e = chain[i];
+  }
+  return null;
+};
+
+// Word-bearing pieces of a node, capped at 2: each button and each link counts once, and so does each text node outside them.
+// A button or link counts even under `hidden`: a group shows one of its buttons at a time (Microsoft Learn's feedback
+// row: a visible "Yes" beside a hidden "No").
+const pieces = (n: Node, opts: RenderOpts): number => {
+  if (n.nodeType === 3 /* TEXT_NODE */) return /[\p{L}\p{N}]/u.test(n.textContent || '') ? 1 : 0;
+  if (n.nodeType !== 1 /* ELEMENT_NODE */) return 0;
+  const e = n as Element;
+  if (e.tagName === 'BUTTON' || e.tagName === 'A') return /[\p{L}\p{N}]/u.test(e.textContent || '') ? 1 : 0;
+  if (SKIP_TAGS.has(e.tagName) || underHiddenAttr(e, opts)) return 0;
+  let c = 0;
+  for (const k of e.childNodes) if ((c += pieces(k, opts)) >= 2) return 2;
+  return c;
+};
+
+const runsOf = (box: Element, opts: RenderOpts): Map<Node, Run> => {
+  let at = runCache.get(box);
+  if (at) return at;
+  at = new Map();
+  const text = hasOwnText(box);
+  let run: Run | null = null;
+  for (const n of box.childNodes) {
+    const e = n.nodeType === 1 /* ELEMENT_NODE */ ? (n as Element) : null;
+    if (e && !SKIP_TAGS.has(e.tagName) && !PHRASING_TAGS.has(e.tagName) && !(text && e.tagName.includes('-'))) {
+      if (run) run.next = e;
+      run = null;
+      continue;
+    }
+    if (!run) run = { words: false, pieces: 0, next: null };
+    at.set(n, run);
+    if (!run.words && hasWords(n, opts, false)) run.words = true;
+    if (run.pieces < 2) run.pieces = Math.min(2, run.pieces + pieces(n, opts));
+  }
+  runCache.set(box, at);
+  return at;
+};
+
+const runOf = (el: Element, opts: RenderOpts): Run => {
+  const place = runPlace(el);
+  return (place && runsOf(place.box, opts).get(place.member)) || NO_RUN;
+};
+
+// The block after an accordion's question: words outside buttons and code blocks, links counted. Not a heading (a back
+// button above a page title), a landmark (a menu toggle above its navigation), a widget of its own (`<details>`, a form,
+// a dialog, a menu: Microsoft Learn's feedback "Yes" is followed by a `<details>` popover) or a code block: a code
+// sample's wrapper often starts with its "Copy" button (`<div><button>Copy</button><pre>...</pre></div>`).
+const NOT_PANEL = /^(H[1-6]|NAV|HEADER|FOOTER|ASIDE|DETAILS|DIALOG|FORM)$/;
+const POPUP_ROLES = new Set(['dialog', 'alertdialog', 'menu', 'menubar', 'listbox', 'tooltip', 'navigation']);
+const isPanel = (n: Node | null, opts: RenderOpts): boolean => {
+  const prose = (m: Node): boolean => {
+    if (m.nodeType === 3 /* TEXT_NODE */) return /[\p{L}\p{N}]/u.test(m.textContent || '');
+    if (m.nodeType !== 1 /* ELEMENT_NODE */) return false;
+    const e = m as Element;
+    if (e.tagName === 'BUTTON' || e.tagName === 'PRE' || SKIP_TAGS.has(e.tagName) || underHiddenAttr(e, opts)) return false;
+    return [...e.childNodes].some(prose);
+  };
+  if (!n) return false;
+  const e = n as Element;
+  return !NOT_PANEL.test(e.tagName) && !POPUP_ROLES.has((e.getAttribute('role') || '').toLowerCase()) && prose(e);
 };
 
 // An element under the `hidden` attribute, whatever its value: a browser renders none of it, and the extension skips
