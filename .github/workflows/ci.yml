@@ -19,6 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      # Vitest 5 declares Node ^22.12 || ^24 || >=26, so `npm ci` prints an EBADENGINE warning
+      # on the Node 20 leg. The leg stays: the whole suite runs there (the same tests as on 24,
+      # checked 2026-10-18), and it is the oldest runtime this repo tests. Node 20 reached end
+      # of life on 2026-04-30, and css-select 7 and entities 8 (through linkedom) already declare
+      # Node >= 20.19. If Vitest stops running on 20, decide on the Node floor of engines.node
+      # then; do not pin Vitest back to 4 to keep the leg green.
       matrix:
         node: [20, 24]
     steps:
