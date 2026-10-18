@@ -2,6 +2,31 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.3.0 - 2026-10-18
+
+SSRF guard hardening (BL-22): closes the DNS rebinding window on the public endpoint and extends
+the IP blocklists to cover every range the T99 audit flagged. `htmlToMarkdown` is unchanged;
+`fetchProtected` is the only affected entry point.
+
+### Security
+
+- **DNS pinning:** `fetchProtected` now resolves DNS once, validates every returned address, and
+  pins the TCP connection to those addresses via an undici `Agent`. Previously, Node's `fetch()`
+  re-resolved the hostname independently, so a DNS record that flipped between the guard's lookup
+  and the connect (DNS rebinding) could reach an internal address. The check-then-connect window
+  is closed.
+- **Extended IPv4 blocklist:** multicast (224.0.0.0/4), reserved/broadcast (240.0.0.0/4),
+  TEST-NET-1/2/3 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), benchmarking (198.18.0.0/15),
+  IETF Protocol Assignments (192.0.0.0/24), deprecated 6to4 relay anycast (192.88.99.0/24).
+- **Extended IPv6 blocklist:** NAT64 well-known and local-use (64:ff9b::/96, 64:ff9b:1::/48),
+  6to4 (2002::/16), documentation (2001:db8::/32), Teredo (2001::/32), discard-only (100::/64).
+
+### Added
+
+- `undici` is now a runtime dependency (zero transitive dependencies).
+- `resolveAndValidate(hostname, rawUrl)` is exported from `ssrf-guard` for callers that need the
+  validated addresses (e.g. to build their own pinned dispatcher).
+
 ## 0.2.2 - 2026-10-17
 
 Only the Node renderer's button rule changes, so `htmlToMarkdown` and `fetchAndConvert` change the same way. A review
