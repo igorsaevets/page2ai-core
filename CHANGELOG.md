@@ -2,6 +2,12 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+### Fixed
+
+- **Interface buttons no longer print as paragraphs** (P2A-019). Since 0.2.0 converts the pages of Mintlify, Vercel and the Claude docs, their output carried the header's «Copy page» twice, the code-sample switcher («cURL CLI Python TypeScript C# Go Java PHP Ruby») and icon-font glyphs. A `<button>` is now treated as a control: its label is left out, and so is an `aria-hidden` icon inside a button that is kept. A button stays when it holds the page's text: all the text of a heading or a table cell (an accordion's question, a sortable column's name), block content or an image that is not `aria-hidden` (a zoomable image, a video card), a link around it, a disclosure's label (`aria-expanded` without `aria-haspopup`: a changelog's «Fixes» above its list), a word of a sentence (a tooltip), and the selected tab of a tab list whose panels the converter cannot pair with it. Measured on 53 saved pages (the 21-page corpus, 17 server snapshots of docs sites, 15 pages saved from live sites on 2026-10-17 and 2026-10-18): 34 change, 399 lines go out and 114 come in (a heading without its glyph, «Python» for the tab strip); every heading and code block stays, and the private-use glyphs fall from 153 to 24 (the 24 left are outside buttons: breadcrumb separators and callout icons on the Claude docs). A build that dropped every button lost 27 headings, a table column's name, a word of a sentence and a changelog's section labels; this one keeps them. Known cost: a copy-the-command widget that shows its command in a `<span>` inside the button (neon.com) loses the command.
+
 ## 0.2.0 - 2026-10-17
 
 `htmlToMarkdown` is unchanged: on the 21 corpus pages its output is byte-identical to 0.1.13. What

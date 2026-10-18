@@ -58,6 +58,8 @@ interface RenderOpts {
   tight?: boolean;
   // Table cells and captions: an image that is not shown is written as its alt text (renderInlineNodes, IMG).
   imageAlt?: boolean;
+  // Rendering a <button> that is kept (isControlButton): its aria-hidden elements are left out (an icon-font glyph).
+  inButton?: boolean;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -498,7 +500,7 @@ const walkNodes = (
     const c = node as Element;
     // Skipped where they stand, without ending the run: renderNode would drop them anyway. A hidden block that holds code
     // goes on to renderNode, which prints only its code.
-    if (SKIP_TAGS.has(c.tagName) || hiddenKind(c, opts) === 'hidden') continue;
+    if (SKIP_TAGS.has(c.tagName) || hiddenKind(c, opts) === 'hidden' || isControlButton(c, opts)) continue;
     const phrasing = PHRASING_TAGS.has(c.tagName) || (parentHasText && c.tagName.includes('-'));
     if (phrasing && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
       if (isAriaHidden(c)) continue;
@@ -547,8 +549,10 @@ const renderNode = (
   dedupe: TitleDedupe,
 ): void => {
   const tag = el.tagName;
-  if (SKIP_TAGS.has(tag)) return;
+  if (SKIP_TAGS.has(tag) || isControlButton(el, opts)) return;
   if (isAriaHidden(el)) return;
+  // A kept button with block content (an accordion's heading, a video card): its icon glyphs stay out (inButton).
+  if (tag === 'BUTTON') opts = { ...opts, inButton: true };
   const hidden = hiddenKind(el, opts);
   if (hidden === 'hidden') return;
   if (hidden === 'code') {
@@ -754,6 +758,64 @@ const renderInline = (el: Element, opts: RenderOpts, excludeEls?: ElementFilter)
   renderInlineNodes(hiddenKind(el, opts) === 'code' ? outerPres(el, opts) : [...el.childNodes], opts, excludeEls);
 
 const isAriaHidden = (el: Element): boolean => (el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
+
+// A <button> is a control, and its label names an action ("Copy page", "Search", a feedback "Yes"), not the page's
+// content: it is left out, as the form controls in SKIP_TAGS are (P2A-019: Mintlify, Vercel and the Claude docs printed
+// "Copy page" twice, the code-sample switcher and an icon-font glyph). Kept where the page's own text is in the button,
+// each case measured on the T142 corpus against a build that left every button out:
+// - inside a link, which is named by it;
+// - holding block content (an accordion's heading written inside the button, a card with a paragraph, code) or an
+//   image that is not aria-hidden (a zoomable image, a video card; a framework picker's icons are aria-hidden);
+// - holding all the text of its table cell or heading: a sortable column's name, a row group's label, an accordion's
+//   question. Beside the cell's or heading's own words it is judged like any other button, so an anchor-link button
+//   after a heading's text ("Copy Anchor Link") stays out;
+// - a disclosure (aria-expanded, no popup): its label names the section it opens, a changelog's "Fixes" and
+//   "Improvements" above their lists;
+// - in running text: a tooltip on a word of a sentence ("stored in your documentation repository.");
+// - the selected tab of a tab list whose panels the tab discovery did not find: it names the panel the page shows,
+//   while the other tabs name panels that are not in it ("cURL CLI Python ... Ruby" above one Python sample).
+// A menu, listbox or dialog opener (aria-haspopup) is a control even when it is a disclosure.
+const BLOCK_IN_BUTTON = 'h1, h2, h3, h4, h5, h6, p, ul, ol, dl, table, pre, code, blockquote';
+const isControlButton = (el: Element, opts: RenderOpts): boolean => {
+  if (el.tagName !== 'BUTTON') return false;
+  if (el.closest('a[href]') || el.querySelector(BLOCK_IN_BUTTON)) return false;
+  if ([...el.querySelectorAll('img, picture')].some((i) => !i.closest('[aria-hidden="true"]'))) return false;
+  const box = el.closest('td, th, h1, h2, h3, h4, h5, h6');
+  if (box && !hasWords(box, opts, true)) return false;
+  if ((el.getAttribute('role') || '').toLowerCase() === 'tab') return el.getAttribute('aria-selected') !== 'true';
+  if ((el.getAttribute('aria-haspopup') || 'false').toLowerCase() !== 'false') return true;
+  if (el.hasAttribute('aria-expanded')) return false;
+  return !inRunningText(el, opts);
+};
+
+// Letters or digits outside buttons (and outside links unless `links`), skipped and hidden elements left out.
+const hasWords = (n: Node, opts: RenderOpts, links: boolean): boolean => {
+  if (n.nodeType === 3 /* TEXT_NODE */) return /[\p{L}\p{N}]/u.test(n.textContent || '');
+  if (n.nodeType !== 1 /* ELEMENT_NODE */) return false;
+  const e = n as Element;
+  if (e.tagName === 'BUTTON' || (!links && e.tagName === 'A') || SKIP_TAGS.has(e.tagName) || underHiddenAttr(e, opts)) return false;
+  return [...e.childNodes].some((c) => hasWords(c, opts, links));
+};
+
+// Words of the sentence a phrasing element sits in. The run reaches up through phrasing ancestors to the first block
+// and spans that block's children between the block children on either side. Words count only outside buttons and
+// links: a row of controls and links (a toolbar, a search box beside the nav links) is not a sentence.
+const isPhrasingEl = (e: Element): boolean => PHRASING_TAGS.has(e.tagName) || e.tagName.includes('-');
+const inRunningText = (el: Element, opts: RenderOpts): boolean => {
+  let child: Element = el;
+  let parent = el.parentElement;
+  while (parent && isPhrasingEl(parent)) { child = parent; parent = parent.parentElement; }
+  if (!parent) return false;
+  const isBlock = (n: Node): boolean =>
+    n.nodeType === 1 && !isPhrasingEl(n as Element) && !SKIP_TAGS.has((n as Element).tagName);
+  const kids = [...parent.childNodes];
+  const at = kids.indexOf(child);
+  let lo = at;
+  while (lo > 0 && !isBlock(kids[lo - 1])) lo--;
+  let hi = at;
+  while (hi < kids.length - 1 && !isBlock(kids[hi + 1])) hi++;
+  return kids.slice(lo, hi + 1).some((n) => hasWords(n, opts, false));
+};
 
 // An element under the `hidden` attribute, whatever its value: a browser renders none of it, and the extension skips
 // it by default (includeHiddenMeaningfulText: false). It used to be converted (P2A-012: a grid's 30 closed details
@@ -1007,7 +1069,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     // of 15 <h2>s inside `<a aria-hidden="true">`, and skipping it deleted every one (T109 A/B). The
     // attribute hides from screen readers, not from the screen. `hidden` hides from both (isHiddenEl).
     const hidden = hiddenKind(c, opts);
-    if (SKIP_TAGS.has(tag) || hidden === 'hidden') continue;
+    if (SKIP_TAGS.has(tag) || hidden === 'hidden' || isControlButton(c, opts) || (opts.inButton && isAriaHidden(c))) continue;
     if (hidden === 'code') {
       // Each <pre> is set on its own lines by the PRE branch below.
       const code = renderInlineNodes(outerPres(c, opts), opts, excludeEls);
@@ -1065,7 +1127,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     }
     // Any other element, inline or a container in inline position (a P or styling DIV inside an
     // <li>, a custom element): recurse so links and emphasis inside it survive as markdown.
-    const inner = renderInline(c, opts, excludeEls);
+    const inner = renderInline(c, tag === 'BUTTON' ? { ...opts, inButton: true } : opts, excludeEls);
     add(INLINE_BLOCK_GAP.has(tag) ? ` ${inner} ` : inner, true, visibleText(c, inner));
   }
   return s.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n');

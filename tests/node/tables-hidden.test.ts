@@ -198,9 +198,10 @@ describe('BL-42 (T124 panel): hidden text in code, names and the root', () => {
     ['a tab label leaves out hidden text',
       page('<div><div role="tablist"><button role="tab" aria-controls="p1">One<span hidden>SECRET</span></button><button role="tab" aria-controls="p2">Two</button></div><div role="tabpanel" id="p1">A</div><div role="tabpanel" id="p2">B</div></div>'),
       '### Tab: One\n\nA\n\n### Tab: Two\n\nB'],
+    // The two tab buttons, no longer a group, are interface buttons and stay out (P2A-019); they printed `A B` before.
     ['a tab panel outside the content root is not printed (one panel left is no tab group)',
       '<html><body><main><div role="tablist"><button aria-controls="p1">A</button><button aria-controls="p2">B</button></div><div id="p1"><p>one</p></div></main><div id="p2" hidden><p>SECRET</p></div></body></html>',
-      'A B\n\none'],
+      'one'],
     ['only a <div> or <table> with a React segment id is a segment, the id ending in S: and a hex number',
       page('<p>Shown</p><span hidden id="S:0">A</span><div hidden id="S:evil">B</div><div hidden id="app-S:1f">C</div>'), 'Shown\n\nC'],
     ['a parsed React table segment, <tbody> inserted', page('<p>Shown</p><table hidden><tbody><tr id="S:2"><td>Late cell</td></tr></tbody></table>'),
