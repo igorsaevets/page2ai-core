@@ -79,3 +79,45 @@ describe('P2A-019: buttons that hold the page\'s text stay', () => {
       .toBe('### Tab: npm\n\n```\nnpm i x\n```\n\n### Tab: yarn\n\n```\nyarn add x\n```');
   });
 });
+
+// T144, the T143 panel's shapes (grok, spark, gemini flash): 0.2.1 dropped each kept case below and printed the card
+// actions; 3,000 sibling buttons took seconds.
+describe('P2A-019 review: questions, terms and labelled values stay; card actions and code-block buttons go', () => {
+  it.each([
+    ['an accordion question with no aria-expanded and no heading, right before its panel (W3Schools)',
+      '<button class="accordion">What is your return policy?</button><div class="panel"><p>Thirty days.</p></div>',
+      'What is your return policy?\n\nThirty days.'],
+    ['the same question as a list item', '<ul><li><button>How do I reset?</button><div><p>Use the form.</p></div></li></ul>',
+      '- How do I reset?\n\n   Use the form.'],
+    ['a definition term written as a button', '<dl><dt><button>API key</button></dt><dd>A secret token.</dd></dl>', '**API key**\n: A secret token.'],
+    ['a question under role="heading"', '<div role="heading" aria-level="3"><button>Is there a free plan?</button></div><div><p>Yes.</p></div>',
+      'Is there a free plan?\n\nYes.'],
+    ['a link written inside a button', '<p><button><a href="/start">Get started</a></button></p>', '[Get started](https://example.test/start)'],
+    ['a command whose accessible name is an action on it (neon.com)',
+      '<div><button aria-label="Copy command: npx example@latest init"><span aria-hidden="true">$</span><span>npx example@latest init</span></button></div><p>Then run it.</p>',
+      'npx example@latest init\n\nThen run it.'],
+  ])('%s', (_label, body, expected) => {
+    expect(md(page(body))).toBe(expected);
+  });
+
+  it.each([
+    ['a custom card\'s action row', '<div><mat-card><mat-card-content><p>A small spitz breed.</p></mat-card-content>'
+      + '<mat-card-actions><button>LIKE</button><button>SHARE</button></mat-card-actions></mat-card></div>', 'A small spitz breed.'],
+    ['a Copy button that starts a code sample\'s wrapper', '<div><button>Copy</button><pre><code>npm i x</code></pre></div>', '```\nnpm i x\n```'],
+    ['a feedback Yes beside a hidden No, before a details popover (Microsoft Learn)',
+      '<p>Was this page helpful?</p><div><button>Yes</button><button hidden>No</button><details><summary>No</summary><div role="dialog"><p>Need help?</p></div></details></div>',
+      'Was this page helpful?\n\nNo\n\nNeed help?'], // the popover's own summary and text print, as in 0.2.1; "Yes" does not
+    ['pagination named "Go to page 2" (no action on a label with letters)',
+      '<p>Body.</p><div><button aria-label="Go to page 2">2</button><button aria-label="Go to page 3">3</button></div>', 'Body.'],
+    ['a button named like its label', '<div><button aria-label="Copy page"><span>Copy page</span></button></div><p>Body.</p>', 'Body.'],
+  ])('%s', (_label, body, expected) => {
+    expect(md(page(body))).toBe(expected);
+  });
+
+  it('3,000 sibling buttons render in linear time', () => {
+    const many = '<p>' + Array.from({ length: 3000 }, (_, i) => `<span><button>b${i}</button></span>`).join('') + '</p>';
+    const t = performance.now();
+    md(page(many));
+    expect(performance.now() - t).toBeLessThan(1500); // 0.2.1: 4 to 5 s on the T144 machine, this build: 50 ms
+  });
+});

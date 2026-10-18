@@ -2,6 +2,23 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+A review of the 0.2.1 button rule (P2A-019) by three external models, each shape run on npm 0.2.0, 0.2.1 and a build
+that drops every button. The 53-page corpus converts byte for byte as in 0.2.1 with default options, `includeImages:
+false` and `includeHidden: true`.
+
+- Fixed: a page with thousands of sibling buttons took seconds: every button scanned its whole run of siblings, so
+  3,000 buttons in one paragraph took 4 to 5 s (0.2.0: about 30 ms). The run is now computed once per container.
+- Fixed: 0.2.1 dropped the text of buttons that hold it: an accordion question with neither `aria-expanded` nor a heading
+  (`<button>Question?</button><div><p>Answer.</p></div>`, also in a list item), a definition term, a question under
+  `role="heading"`, a link written inside a button, and a command whose button is named "Copy command: <the command>".
+- Fixed: a custom element is a block unless its container has text of its own, as the converter already renders it,
+  so a card's action row (`<mat-card-actions><button>LIKE</button>`) no longer counts the card's text as its sentence.
+- Still dropped, as in 0.2.1: buttons with no text of the page around them that hold options, cards or a value in a
+  `<span>` or `<div>` (sizes, quiz answers, chapter lists, card grids), a question in a wrapper of its own before the
+  answer, and a title button beside a heading's link.
+
 ## 0.2.1 - 2026-10-17
 
 Only the Node renderer changes, in how it treats `<button>`, so `htmlToMarkdown` and `fetchAndConvert` change the
