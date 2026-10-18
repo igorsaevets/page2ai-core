@@ -61,6 +61,64 @@ describe('findIpBlockReason — pure address checks', () => {
       expect(findIpBlockReason(good), good).toBeNull();
     }
   });
+
+  it('blocks IPv4 broadcast and multicast', () => {
+    for (const bad of ['255.255.255.255', '224.0.0.1', '239.255.255.255', '240.0.0.1']) {
+      expect(findIpBlockReason(bad), bad).not.toBeNull();
+    }
+  });
+
+  it('blocks IPv4 TEST-NET and benchmarking ranges', () => {
+    for (const bad of [
+      '192.0.2.1',     // TEST-NET-1
+      '198.51.100.1',  // TEST-NET-2
+      '203.0.113.1',   // TEST-NET-3
+      '198.18.0.1',    // benchmarking low
+      '198.19.255.255', // benchmarking high
+      '192.0.0.1',     // IETF Protocol Assignments
+      '192.88.99.1',   // deprecated 6to4 relay anycast
+    ]) {
+      expect(findIpBlockReason(bad), bad).not.toBeNull();
+    }
+  });
+
+  it('blocks NAT64, 6to4, documentation, Teredo, discard IPv6 ranges', () => {
+    for (const bad of [
+      '64:ff9b::7f00:1',        // NAT64 well-known → 127.0.0.1
+      '64:ff9b::a9fe:a9fe',     // NAT64 well-known → 169.254.169.254
+      '64:ff9b:1::7f00:1',      // NAT64 local-use (RFC 8215)
+      '2002:7f00:1::1',         // 6to4 → 127.0.0.1
+      '2002:c0a8:1::1',         // 6to4 → 192.168.1.x
+      '2001:db8::1',            // documentation
+      '2001:db8:85a3::8a2e:370:7334', // documentation
+      '2001::1',                // Teredo (canonical form with ::)
+      '2001:0:4136:e378:8000:63bf:3fff:fdd2', // Teredo (explicit group 1 = 0)
+      '100::1',                 // discard-only
+    ]) {
+      expect(findIpBlockReason(bad), bad).not.toBeNull();
+    }
+  });
+
+  it('does NOT block legitimate 2001:x addresses outside Teredo/documentation', () => {
+    for (const good of [
+      '2001:4860:4860::8888',   // Google Public DNS
+      '2001:4860:4860::8844',   // Google Public DNS
+    ]) {
+      expect(findIpBlockReason(good), good).toBeNull();
+    }
+  });
+
+  it('does NOT block public addresses adjacent to blocked ranges', () => {
+    for (const good of [
+      '172.32.0.1',    // above RFC1918 172.16/12
+      '100.128.0.1',   // above CGNAT 100.64/10
+      '192.0.3.1',     // above TEST-NET-1
+      '192.88.100.1',  // above deprecated 6to4 relay
+      '223.255.255.255', // below multicast (last Class C)
+    ]) {
+      expect(findIpBlockReason(good), good).toBeNull();
+    }
+  });
 });
 
 describe('assertSafeUrlResolved — DNS layer', () => {
@@ -130,6 +188,32 @@ describe('fetchProtected — manual redirect handling', () => {
     expect(res.finalUrl).toBe('http://public.example/b');
     expect(res.text).toContain('done');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('pins DNS: fetch receives a dispatcher so the runtime cannot re-resolve to a different address', async () => {
+    // DNS rebinding: first call returns public, second would return private.
+    // With pinning, fetch() must use the first (validated) addresses, not re-resolve.
+    const { lookup: lookupMock } = await import('node:dns/promises');
+    const castLookup = lookupMock as unknown as ReturnType<typeof vi.fn>;
+    castLookup.mockImplementation(async (host: string) => {
+      if (host === 'public.example') return [{ address: '93.184.216.34', family: 4 }];
+      throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
+    });
+
+    const fetchMock = vi.fn(async () =>
+      new Response('<html><body>ok</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchProtected('http://public.example/page');
+
+    // The critical assertion: fetch was called with a dispatcher option (the pinned Agent)
+    const args = fetchMock.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(args[1]).toHaveProperty('dispatcher');
+    expect(args[1].dispatcher).toBeTruthy();
   });
 
   it('gives up after too many redirects', async () => {

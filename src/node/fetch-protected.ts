@@ -1,6 +1,8 @@
 // Hardened fetch for the Node MCP server:
-// - SSRF guard with DNS resolution (assertSafeUrlResolved) run on the initial
-//   URL AND on every redirect hop, before that hop is followed
+// - SSRF guard with DNS resolution + pinning: every hop is checked (string +
+//   DNS), and the connection is pinned to the validated addresses via an undici
+//   Agent so a DNS rebinding between the check and the connect cannot reach
+//   an internal address
 // - Redirects followed MANUALLY (redirect: 'manual', max 10 hops) so an
 //   internal target is rejected before the request is made, not after
 // - AbortController timeout (default 15s, covers the whole redirect chain)
@@ -20,7 +22,12 @@
 // KNOWN LIMITATION: no charset detection for non-UTF-8 pages (Windows-1251 docs will
 // mojibake); a later release may add it via `fetch-charset-detection`.
 
-import { assertSafeUrlResolved, SsrfBlockedError } from './ssrf-guard.js';
+import { Agent } from 'undici';
+import {
+  assertSafeUrl,
+  resolveAndValidate,
+  SsrfBlockedError,
+} from './ssrf-guard.js';
 
 export interface FetchProtectedOptions {
   timeoutMs?: number;
@@ -56,6 +63,34 @@ export class FetchProtectionError extends Error {
 
 const stripBom = (s: string): string => s.replace(/^﻿/, '');
 
+const normalizeHost = (hostname: string): string => {
+  let h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h.length > 1 && h.endsWith('.')) h = h.slice(0, -1);
+  return h;
+};
+
+const isIpv4Literal = (host: string): boolean =>
+  /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+
+const createPinnedAgent = (
+  addrs: { address: string; family: number }[],
+): Agent =>
+  new Agent({
+    connect: {
+      lookup: (
+        _hostname: string,
+        options: { all?: boolean },
+        callback: Function,
+      ) => {
+        if (options.all) {
+          callback(null, addrs);
+        } else {
+          callback(null, addrs[0].address, addrs[0].family);
+        }
+      },
+    },
+  });
+
 export const fetchProtected = async (
   rawUrl: string,
   opts: FetchProtectedOptions = {},
@@ -70,22 +105,35 @@ export const fetchProtected = async (
 
   try {
     // Follow redirects by hand: validate every hop (string checks + DNS)
-    // BEFORE connecting to it. With redirect:'follow' the runtime would have
-    // already delivered the request to an internal host by the time any
-    // post-hoc check could run.
+    // BEFORE connecting to it, AND pin the connection to the validated IPs
+    // so a DNS rebinding between our check and the connect cannot redirect
+    // the socket to an internal address.
     let currentUrl = rawUrl;
     let resp: Response;
     let hops = 0;
     for (;;) {
-      await assertSafeUrlResolved(currentUrl);
-      resp = await fetch(currentUrl, {
-        signal: controller.signal,
-        headers: {
-          'user-agent': ua,
-          accept: BROWSER_ACCEPT,
-        },
-        redirect: 'manual',
-      });
+      const parsed = assertSafeUrl(currentUrl);
+      const host = normalizeHost(parsed.hostname);
+      let agent: Agent | undefined;
+      if (!isIpv4Literal(host) && !host.includes(':')) {
+        const addrs = await resolveAndValidate(host, currentUrl);
+        agent = createPinnedAgent(addrs);
+      }
+      try {
+        resp = await fetch(currentUrl, {
+          signal: controller.signal,
+          headers: {
+            'user-agent': ua,
+            accept: BROWSER_ACCEPT,
+          },
+          redirect: 'manual',
+          ...(agent ? { dispatcher: agent } as Record<string, unknown> : {}),
+        } as RequestInit);
+      } finally {
+        if (agent) {
+          agent.close().catch(() => {});
+        }
+      }
 
       if (resp.status >= 300 && resp.status < 400) {
         const location = resp.headers.get('location');
