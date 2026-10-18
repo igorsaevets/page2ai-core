@@ -2,7 +2,11 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.2.1 - 2026-10-17
+
+Only the Node renderer changes, in how it treats `<button>`, so `htmlToMarkdown` and `fetchAndConvert` change the
+same way. Measured on npm 0.2.0 against this release's code with default options, `includeImages: false` and
+`includeHidden: true`; each changed line was read.
 
 ### Fixed
 
