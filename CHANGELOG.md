@@ -23,7 +23,8 @@ the IP blocklists to cover every range the T99 audit flagged. `htmlToMarkdown` i
 
 ### Added
 
-- `undici` is now a runtime dependency (zero transitive dependencies).
+- `undici` ^6.29.1 is now a runtime dependency (zero transitive dependencies).
+- Minimum Node version raised from 18.0 to 18.17 (undici 6.x requirement).
 - `resolveAndValidate(hostname, rawUrl)` is exported from `ssrf-guard` for callers that need the
   validated addresses (e.g. to build their own pinned dispatcher).
 
