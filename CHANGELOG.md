@@ -2,11 +2,12 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.2.2 - 2026-10-17
 
-A review of the 0.2.1 button rule (P2A-019) by three external models, each shape run on npm 0.2.0, 0.2.1 and a build
-that drops every button. The 53-page corpus converts byte for byte as in 0.2.1 with default options, `includeImages:
-false` and `includeHidden: true`.
+Only the Node renderer's button rule changes, so `htmlToMarkdown` and `fetchAndConvert` change the same way. A review
+of the 0.2.1 rule (P2A-019) by three external models, each shape run on npm 0.2.0, 0.2.1 and a build that drops every
+button. The 53-page corpus converts as in 0.2.1, byte for byte apart from `extractor_version`, with default options,
+`includeImages: false` and `includeHidden: true`.
 
 - Fixed: a page with thousands of sibling buttons took seconds: every button scanned its whole run of siblings, so
   3,000 buttons in one paragraph took 4 to 5 s (0.2.0: about 30 ms). The run is now computed once per container.
@@ -17,7 +18,8 @@ false` and `includeHidden: true`.
   so a card's action row (`<mat-card-actions><button>LIKE</button>`) no longer counts the card's text as its sentence.
 - Still dropped, as in 0.2.1: buttons with no text of the page around them that hold options, cards or a value in a
   `<span>` or `<div>` (sizes, quiz answers, chapter lists, card grids), a question in a wrapper of its own before the
-  answer, and a title button beside a heading's link.
+  answer, a title button beside a heading's link, and a copy-the-command button that carries its command only as its
+  own text: the neon.com page named in 0.2.1 still loses `npx neon@latest init`.
 
 ## 0.2.1 - 2026-10-17
 
