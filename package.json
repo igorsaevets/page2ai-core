@@ -33,7 +33,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.17.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -49,7 +49,7 @@
   "dependencies": {
     "css.escape": "^1.5.1",
     "linkedom": "^0.18.11",
-    "undici": "^8.12.2"
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@types/css.escape": "^1.5.2",
