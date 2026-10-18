@@ -1,6 +1,6 @@
 {
   "name": "@page2ai/core",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Extract clean Markdown from any web page HTML. Works in Node.js (via linkedom) and browsers. Powers the @page2ai/mcp server.",
   "type": "module",
   "exports": {
