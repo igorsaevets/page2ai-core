@@ -623,7 +623,10 @@ const renderNode = (
   }
 
   if (tag === 'TABLE') {
-    renderTable(el, out, opts);
+    // A layout table's cells convert as the blocks they hold, in source order. Its images keep the table-cell rule
+    // (imageAlt): an HTML e-mail's spacers and open-tracking pixels have an empty alt and add nothing.
+    if (isLayoutTable(el)) walkWithTabs(el, out, { ...opts, includeImages: false, imageAlt: true }, tabGroups, capturedPanelEls, dedupe);
+    else renderTable(el, out, opts);
     return;
   }
 
@@ -631,7 +634,13 @@ const renderNode = (
   if (tag === 'DL' && renderDefinitionList(el, out, opts, tabGroups, capturedPanelEls, dedupe)) return;
 
   if (tag === 'IMG') {
-    if (!opts.includeImages) return;
+    if (!opts.includeImages) {
+      // An image alone in a layout table's cell is a run of its own and arrives here, not in the run's IMG branch, so the
+      // cell rule (imageAlt) is applied here too: its alt text, and nothing for an empty alt.
+      const alt = opts.imageAlt ? cleanInline(el.getAttribute('alt') || '') : '';
+      if (alt) out.push(escapeBlockStart(alt));
+      return;
+    }
     const alt = cleanInline(el.getAttribute('alt') || '');
     const src = absUrl(el.getAttribute('src') || el.getAttribute('data-src') || '', opts.baseUrl);
     if (src) out.push(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`);
@@ -1505,6 +1514,14 @@ const flattenTable = (tbl: Element, opts: RenderOpts, excludeEls?: ElementFilter
   }
   return lines.join('\n');
 };
+
+// A table whose role is presentation or none only lays its content out: the role takes the table semantics away
+// (WAI-ARIA 1.2), so a screen reader reads its cells as running content, and Mozilla Readability does not count such a
+// table as data. HTML e-mails are built from nested ones, and as a Markdown table a whole letter came out as one cell
+// on one line, its heading and 14 paragraphs run together (P2A-024, the IronMemo letter). Only the first token of a role
+// list is read; a browser would skip a first token it does not know, which this does not.
+const isLayoutTable = (tbl: Element): boolean =>
+  /^(?:presentation|none)$/i.test((tbl.getAttribute('role') || '').trim().split(/\s+/)[0]);
 
 const renderTable = (tbl: Element, out: string[], opts: RenderOpts): void => {
   const rows = ownRows(tbl, opts);
