@@ -2,7 +2,7 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.3.1 - 2026-10-20
 
 - Fixed: a layout table, `<table role="presentation">` or `role="none"`, became a Markdown table, so an HTML e-mail
   (built from nested ones) came out as one cell on one line, its heading and paragraphs run together (P2A-024: the
