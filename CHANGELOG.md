@@ -2,6 +2,17 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+- Fixed: a layout table, `<table role="presentation">` or `role="none"`, became a Markdown table, so an HTML e-mail
+  (built from nested ones) came out as one cell on one line, its heading and paragraphs run together (P2A-024: the
+  IronMemo letter, one 1,415-character cell holding its `<h1>` and 14 paragraphs). Such a table now converts as the
+  blocks in its cells, in source order; a data table inside it stays a table. Its images keep the table-cell rule: an
+  image is written as its alt text, and a spacer or an open-tracking pixel (empty alt) adds nothing, so no image URL
+  that was left out before appears. Only the first token of a `role` list is read. Measured on 45 e-mail renders (7
+  languages): 0 table rows instead of 1, 11 to 17 paragraphs instead of 1. The 53-page corpus changes on one page
+  (Wikipedia's article message box) with default options, `includeImages: false` and `includeHidden: true`.
+
 ## 0.3.0 - 2026-10-18
 
 SSRF guard hardening (BL-22): closes the DNS rebinding window on the public endpoint and extends
