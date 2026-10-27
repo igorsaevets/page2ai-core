@@ -24,10 +24,10 @@ describe('P2A-001: text outside block tags', () => {
     ['bare div beside a p', '<div>Hello div</div><p>Hello p</p>', 'Hello div\n\nHello p'],
     ['span directly in a div', '<div><span>Span text</span></div>', 'Span text'],
     ['card heading + div', '<div class="card"><h3>Activity</h3><div>Period: 7 days</div></div>', '### Activity\n\nPeriod: 7 days'],
-    ['metric tile', '<div class="tile"><div class="label">Recordings</div><div class="value">5</div></div>', 'Recordings\n\n5'],
-    // The reporter's key/value grid, pinned exactly (T121 panel: only a substring check covered it).
-    // Two paragraphs, like the metric tile: without CSS nothing says the two divs sit side by side.
-    ['key/value grid', '<h3>Billing</h3><div class="kv"><div class="k">Plan</div><div class="v">starter</div></div>', '### Billing\n\nPlan\n\nstarter'],
+    ['metric tile', '<div class="tile"><div class="label">Recordings</div><div class="value">5</div></div>', 'Recordings: 5'],
+    // P2A-014: label/value grids with class hints (k/v, label/value) and short texts
+    // are now paired as "Label: value" instead of two paragraphs (heuristic in basic-renderer).
+    ['key/value grid', '<h3>Billing</h3><div class="kv"><div class="k">Plan</div><div class="v">starter</div></div>', '### Billing\n\nPlan: starter'],
     ['section > div', '<section><div>In a section</div></section>', 'In a section'],
     ['div with br', '<div>line one<br>line two</div>', 'line one\nline two'],
     ['div text then p', '<div>Outer text<p>Inner p</p></div>', 'Outer text\n\nInner p'],

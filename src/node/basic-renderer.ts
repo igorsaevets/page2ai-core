@@ -540,6 +540,90 @@ const renderNodeWithTabs = (
   renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
+// P2A-014: label/value grids built from DIVs/SPANs with class hints (k/v, label/value).
+// Without CSS nothing says <div>k</div><div>v</div> sit side-by-side, so each DIV
+// became its own paragraph ("Plan\n\nstarter"). This heuristic restores the pairing
+// as "Label: value" when every child is clearly a label or value by class name and
+// both texts are short (≤30 chars). Only class-name signal is trusted — a generic
+// "two short sibling divs" rule would also pair navigation links/badges. The
+// threshold and class set are deliberately narrow; wider patterns (row wrappers,
+// other token names) are handled in the same place if observed.
+const hasLabelClass = (el: Element): boolean => {
+  const c = (el.getAttribute('class') || '').toLowerCase();
+  if (!c.trim()) return false;
+  const toks = c.split(/\s+/).filter(Boolean);
+  if (toks.includes('k') || toks.includes('label') || toks.includes('key') || toks.includes('dt')) return true;
+  return toks.some((t) => t.includes('label'));
+};
+const hasValueClass = (el: Element): boolean => {
+  const c = (el.getAttribute('class') || '').toLowerCase();
+  if (!c.trim()) return false;
+  const toks = c.split(/\s+/).filter(Boolean);
+  if (toks.includes('v') || toks.includes('value') || toks.includes('val') || toks.includes('dd')) return true;
+  return toks.some((t) => t.includes('value'));
+};
+const getKvPairs = (el: Element, opts: RenderOpts): Array<[Element, Element]> | null => {
+  const kids = [...el.children].filter((c) => {
+    const e = c as Element;
+    if (isHiddenEl(e, opts)) return false;
+    if (SKIP_TAGS.has(e.tagName)) return false;
+    return true;
+  }) as Element[];
+  // Flat path: even number of direct label/value children
+  if (kids.length >= 2 && kids.length % 2 === 0) {
+    let flatOk = true;
+    for (let i = 0; i < kids.length; i += 2) {
+      const a = kids[i];
+      const b = kids[i + 1];
+      if (!hasLabelClass(a) || !hasValueClass(b)) { flatOk = false; break; }
+      const at = cleanInline(a.textContent || '').trim();
+      const bt = cleanInline(b.textContent || '').trim();
+      if (!at || !bt || at.length > 30 || bt.length > 30) { flatOk = false; break; }
+    }
+    if (flatOk) {
+      const allEl = [...el.children].filter((c) => !isHiddenEl(c as Element, opts) && !SKIP_TAGS.has((c as Element).tagName)).length;
+      let hasText = false;
+      for (const n of el.childNodes) if (n.nodeType === 3 && /\S/.test(n.textContent || '')) { hasText = true; break; }
+      if (allEl === kids.length && !hasText) {
+        const pairs: Array<[Element, Element]> = [];
+        for (let i = 0; i < kids.length; i += 2) pairs.push([kids[i], kids[i + 1]]);
+        return pairs;
+      }
+    }
+  }
+  // Row-wrapper path: <div class="kv"><div class="row"><div class="k">...</div><div class="v">...</div></div>…</div>
+  if (kids.length >= 1) {
+    const rowPairs: Array<[Element, Element]> = [];
+    let rowsOk = true;
+    for (const row of kids) {
+      const cols = [...row.children].filter((c) => {
+        const e = c as Element;
+        if (isHiddenEl(e, opts)) return false;
+        if (SKIP_TAGS.has(e.tagName)) return false;
+        return true;
+      }) as Element[];
+      if (cols.length !== 2) { rowsOk = false; break; }
+      const a = cols[0];
+      const b = cols[1];
+      if (!hasLabelClass(a) || !hasValueClass(b)) { rowsOk = false; break; }
+      const at = cleanInline(a.textContent || '').trim();
+      const bt = cleanInline(b.textContent || '').trim();
+      if (!at || !bt || at.length > 30 || bt.length > 30) { rowsOk = false; break; }
+      for (const n of row.childNodes) if (n.nodeType === 3 && /\S/.test(n.textContent || '')) { rowsOk = false; break; }
+      if (!rowsOk) break;
+      const allRowEl = [...row.children].filter((c) => !isHiddenEl(c as Element, opts) && !SKIP_TAGS.has((c as Element).tagName)).length;
+      if (allRowEl !== cols.length) { rowsOk = false; break; }
+      rowPairs.push([a, b]);
+    }
+    if (rowsOk && rowPairs.length === kids.length) {
+      for (const n of el.childNodes) if (n.nodeType === 3 && /\S/.test(n.textContent || '')) { rowsOk = false; break; }
+      const allEl = [...el.children].filter((c) => !isHiddenEl(c as Element, opts) && !SKIP_TAGS.has((c as Element).tagName)).length;
+      if (rowsOk && allEl === kids.length) return rowPairs;
+    }
+  }
+  return null;
+};
+
 // Every block renders flush left; a list item indents what it holds (renderListItem).
 const renderNode = (
   el: Element,
@@ -649,6 +733,21 @@ const renderNode = (
 
   if (tag === 'HR') { out.push('', '---', ''); return; }
   if (tag === 'BR') { out.push(''); return; }
+
+  // P2A-014: label/value grids as "Label: value" (heuristic, class-gated, short).
+  {
+    const kv = getKvPairs(el, opts);
+    if (kv) {
+      const lines: string[] = [];
+      for (const [a, b] of kv) {
+        const lab = renderInline(a, opts, capturedPanelEls).trim().replace(/\s+/g, ' ');
+        const val = renderInline(b, opts, capturedPanelEls).trim().replace(/\s+/g, ' ');
+        lines.push(`${lab}: ${val}`);
+      }
+      out.push('', escapeBlockStarts(lines.join('\n')), '');
+      return;
+    }
+  }
 
   walkWithTabs(el, out, opts, tabGroups, capturedPanelEls, dedupe);
 };
