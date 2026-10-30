@@ -2,6 +2,17 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.3.2 - 2026-10-30
+
+- Fixed: a label / value pair built from sibling `<div>`s printed as two paragraphs, so the pairing the page showed was
+  lost. The Node renderer has no CSS, so nothing in the DOM told it two `<div>`s sit side by side; each block child
+  became its own paragraph (P2A-014: `<div class="kv"><div class="k">Plan</div><div class="v">starter</div></div>`
+  rendered as `Plan\n\nstarter`, hiding the pair). A grid of consecutive two-cell rows is now paired as `Label: value`
+  (one per line); a metric tile with a label-and-value pair converts the same way (`Recordings: 5`). A key with its
+  own link keeps the bold form, `**Plan**: [starter](https://example.test/s)`, so no formatting is lost. A `<dl>`
+  (`<dt>` + `<dd>`) still converts to its own pair, unchanged. Pinned by `tests/node/p2a-014-kv.test.ts` (9 cases)
+  and the metric-tile and key / value grid tests in `tests/node/bare-text.test.ts`.
+
 ## 0.3.1 - 2026-10-20
 
 - Fixed: a layout table, `<table role="presentation">` or `role="none"`, became a Markdown table, so an HTML e-mail
