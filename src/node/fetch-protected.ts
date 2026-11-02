@@ -19,10 +19,19 @@
 //   text/markdown;q=0` still got Markdown from platform.claude.com; `text/html,text/plain` got it
 //   from fumadocs.dev). A URL that is itself a Markdown or text file is still served, through `*/*`.
 //
+// - Proxy support: honours HTTPS_PROXY / HTTP_PROXY / NO_PROXY env vars. When a
+//   proxy is configured for the target URL, the request goes through an undici
+//   ProxyAgent. DNS pinning is impossible through a proxy (the proxy resolves
+//   the target hostname), so the SSRF DNS check becomes advisory: it still
+//   catches hostnames that resolve to private IPs, but the proxy may re-resolve
+//   to a different address. The proxy itself is trusted infrastructure — its URL
+//   is NOT subject to the SSRF guard. When NO_PROXY matches the target, the
+//   direct DNS-pinned path is used as before.
+//
 // KNOWN LIMITATION: no charset detection for non-UTF-8 pages (Windows-1251 docs will
 // mojibake); a later release may add it via `fetch-charset-detection`.
 
-import { Agent } from 'undici';
+import { Agent, ProxyAgent } from 'undici';
 import {
   assertSafeUrl,
   resolveAndValidate,
@@ -72,6 +81,35 @@ const normalizeHost = (hostname: string): string => {
 const isIpv4Literal = (host: string): boolean =>
   /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 
+// Read HTTPS_PROXY / HTTP_PROXY / NO_PROXY from env and return the proxy URL
+// for this target, or null when the request should go direct.
+// Lowercase env vars take precedence (curl, wget, Node convention).
+export const getProxyForUrl = (target: URL): string | null => {
+  const noProxy = process.env.no_proxy || process.env.NO_PROXY || '';
+  if (noProxy === '*') return null;
+
+  const hostname = normalizeHost(target.hostname);
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80');
+
+  for (const entry of noProxy.split(',')) {
+    const raw = entry.trim().toLowerCase();
+    if (!raw) continue;
+    const [patternHost, patternPort] = raw.split(':');
+    if (patternPort && patternPort !== port) continue;
+    if (!patternHost) continue;
+    if (hostname === patternHost) return null;
+    const dotted = patternHost.startsWith('.') ? patternHost : '.' + patternHost;
+    if (hostname.endsWith(dotted)) return null;
+  }
+
+  const proxy =
+    target.protocol === 'https:'
+      ? process.env.https_proxy || process.env.HTTPS_PROXY
+      : process.env.http_proxy || process.env.HTTP_PROXY;
+
+  return proxy || null;
+};
+
 const createPinnedAgent = (
   addrs: { address: string; family: number }[],
 ): Agent =>
@@ -114,11 +152,19 @@ export const fetchProtected = async (
     for (;;) {
       const parsed = assertSafeUrl(currentUrl);
       const host = normalizeHost(parsed.hostname);
-      let agent: Agent | undefined;
+      const proxyUrl = getProxyForUrl(parsed);
+      let dispatcher: Agent | ProxyAgent | undefined;
+
       if (!isIpv4Literal(host) && !host.includes(':')) {
         const addrs = await resolveAndValidate(host, currentUrl);
-        agent = createPinnedAgent(addrs);
+        if (!proxyUrl) {
+          dispatcher = createPinnedAgent(addrs);
+        }
       }
+      if (proxyUrl && !dispatcher) {
+        dispatcher = new ProxyAgent({ uri: proxyUrl });
+      }
+
       try {
         resp = await fetch(currentUrl, {
           signal: controller.signal,
@@ -127,11 +173,11 @@ export const fetchProtected = async (
             accept: BROWSER_ACCEPT,
           },
           redirect: 'manual',
-          ...(agent ? { dispatcher: agent } as Record<string, unknown> : {}),
+          ...(dispatcher ? { dispatcher } as Record<string, unknown> : {}),
         } as RequestInit);
       } finally {
-        if (agent) {
-          agent.close().catch(() => {});
+        if (dispatcher) {
+          dispatcher.close().catch(() => {});
         }
       }
 
