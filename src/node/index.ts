@@ -396,4 +396,4 @@ export { LinkedomAdapter } from './linkedom-adapter.js';
 // hop, so a caller can learn before fetching whether a URL will be refused; findIpBlockReason is
 // its address rule. Both sat in the published .d.ts without being importable (P2A-009).
 export { SsrfBlockedError, assertSafeUrl, assertSafeUrlResolved, findIpBlockReason } from './ssrf-guard.js';
-export { FetchProtectionError, fetchProtected } from './fetch-protected.js';
+export { FetchProtectionError, fetchProtected, getProxyForUrl } from './fetch-protected.js';
