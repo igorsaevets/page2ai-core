@@ -2,6 +2,29 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.0 - 2026-11-02
+
+### Breaking
+
+- **Node.js >=20.18.1 required.** The `engines.node` field is raised from `>=18.17.0` to `>=20.18.1`.
+  Node 18 has been end-of-life since April 2025. The CI matrix already ran only Node 20 and 24.
+
+### Features
+
+- **Proxy support:** `fetchProtected` honours the `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`
+  environment variables (lowercase takes precedence, matching curl/wget/Node convention). When a
+  proxy is configured, the request routes through an undici `ProxyAgent`. The SSRF guard's
+  string-level checks and advisory DNS resolution still run — a hostname resolving to a private IP
+  is blocked even through a proxy. When `NO_PROXY` matches the target, the request goes direct with
+  full DNS pinning as before. `getProxyForUrl(url)` is exported for consumers who need to check
+  proxy state.
+
+### Dependencies
+
+- **undici** upgraded from 6.29.1 to 7.30.1 (major). The `Agent({ connect: { lookup } })` API
+  used for SSRF DNS pinning is unchanged. Fixes CVE-2026-87018 (High: DoS via TLS 1.2
+  renegotiation).
+
 ## 0.3.2 - 2026-10-30
 
 - Fixed: a label / value pair built from sibling `<div>`s printed as two paragraphs, so the pairing the page showed was
