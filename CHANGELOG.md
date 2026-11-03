@@ -2,6 +2,23 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.1 - 2026-11-03
+
+### Fixed
+
+- **User-Agent version was stale.** The `User-Agent` header sent on every fetch was hardcoded as
+  `page2ai-core/0.1` since the first release, while the package was already at 0.4.0. It now tracks
+  `CORE_VERSION` automatically (`page2ai-core/0.4.1`), and a test pins the two values together so
+  they cannot drift again.
+
+### Added
+
+- **Per-host rate limiting.** Back-to-back fetches to the same hostname are spaced at least 1 second
+  apart (plus random jitter), preventing a looping agent from hammering a single site. The delay
+  applies only between separate `fetchProtected` calls — redirect hops within one call are not
+  throttled. The throttle state lives in the process, so it persists across MCP tool calls for the
+  lifetime of the server. `_resetHostThrottle()` is exported for tests.
+
 ## 0.4.0 - 2026-11-02
 
 ### Breaking

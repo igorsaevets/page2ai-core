@@ -37,6 +37,7 @@ import {
   resolveAndValidate,
   SsrfBlockedError,
 } from './ssrf-guard.js';
+import { CORE_VERSION } from '../shared/constants.js';
 
 export interface FetchProtectedOptions {
   timeoutMs?: number;
@@ -53,7 +54,7 @@ export interface FetchProtectedResult {
   statusCode: number;
 }
 
-const DEFAULT_UA = 'page2ai-core/0.1 (+https://github.com/igorsaevets/page2ai-core)';
+export const DEFAULT_UA = `page2ai-core/${CORE_VERSION} (+https://github.com/igorsaevets/page2ai-core)`;
 const DEFAULT_TIMEOUT = 15000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;  // 10 MB
 const DEFAULT_ACCEPT = /^(text\/html|text\/markdown|text\/x-markdown|text\/plain|application\/xhtml\+xml)/i;
@@ -129,6 +130,35 @@ const createPinnedAgent = (
     },
   });
 
+// Per-host rate limiting: prevents a looping agent from hammering one site.
+// The Map survives across tool calls because the MCP server is a long-running
+// process. Redirect hops within one fetchProtected call are not throttled
+// against each other — only the entry-point host is rate-limited.
+const hostLastFetch = new Map<string, number>();
+const HOST_MIN_INTERVAL_MS = 1000;
+const HOST_MAP_CAP = 200;
+
+export const _waitForHost = async (host: string): Promise<void> => {
+  const now = Date.now();
+  const last = hostLastFetch.get(host);
+  if (last !== undefined) {
+    const elapsed = now - last;
+    if (elapsed < HOST_MIN_INTERVAL_MS) {
+      const delay = HOST_MIN_INTERVAL_MS - elapsed + Math.random() * 500;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  hostLastFetch.set(host, Date.now());
+  if (hostLastFetch.size > HOST_MAP_CAP) {
+    const oldest = [...hostLastFetch.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, hostLastFetch.size - HOST_MAP_CAP);
+    for (const [k] of oldest) hostLastFetch.delete(k);
+  }
+};
+
+export const _resetHostThrottle = (): void => { hostLastFetch.clear(); };
+
 export const fetchProtected = async (
   rawUrl: string,
   opts: FetchProtectedOptions = {},
@@ -137,6 +167,10 @@ export const fetchProtected = async (
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const ua = opts.userAgent ?? DEFAULT_UA;
   const accept = opts.acceptContentTypes ?? DEFAULT_ACCEPT;
+
+  // Rate-limit by the initial request's host (redirect hops are not throttled).
+  const entryHost = normalizeHost(new URL(rawUrl).hostname);
+  await _waitForHost(entryHost);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
