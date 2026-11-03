@@ -10,7 +10,7 @@
 
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
-import { absUrl, chooseCodeFence, cleanInline, escapeMd, longestRun } from '../shared/utils.js';
+import { absUrl, chooseCodeFence, cleanInline, escapeMd, isSafeHref, longestRun } from '../shared/utils.js';
 
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
@@ -675,7 +675,8 @@ const renderNode = (
   }
 
   if (tag === 'A') {
-    const href = absUrl(el.getAttribute('href') || '', opts.baseUrl);
+    const rawHref = absUrl(el.getAttribute('href') || '', opts.baseUrl);
+    const href = isSafeHref(rawHref) ? rawHref : '';
     const text = linkText(el, opts, href, capturedPanelEls);
     if (text && href) out.push(`[${text}](${mdUrl(href)})`);
     else if (text) out.push(escapeBlockStart(text));
@@ -727,7 +728,8 @@ const renderNode = (
     }
     const alt = cleanInline(el.getAttribute('alt') || '');
     const src = absUrl(el.getAttribute('src') || el.getAttribute('data-src') || '', opts.baseUrl);
-    if (src) out.push(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`);
+    if (src && !(src.startsWith('data:') && src.length > DATA_URI_MAX_BYTES)) out.push(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`);
+    else if (src && alt) out.push(escapeMd(alt));
     return;
   }
 
@@ -1063,9 +1065,21 @@ const isPanel = (n: Node | null, opts: RenderOpts): boolean => {
 // for one <pre> printed all its prose, so `<div hidden><p>instructions</p><pre>x</pre></div>` carried the instructions.
 // hiddenKind says 'code' for such a block; a walk enters only its outermost <pre>s (outerPres). A hidden list item, row,
 // cell, caption, term or definition is left out whole, code or not (isHiddenEl): it is one entry of a structure.
+// Inline CSS that makes an element invisible: display:none or visibility:hidden.
+// String-only check — no CSSOM, no getComputedStyle (the Node build has no layout engine).
+// Catches the common injection pattern: `<span style="display:none">prompt injection</span>`.
+const STYLE_HIDDEN_RE = /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i;
+const isStyleHidden = (el: Element): boolean => STYLE_HIDDEN_RE.test(el.getAttribute('style') || '');
+
+// data: image URIs above this size are dropped: a real inline icon is a few KB; anything larger
+// is either a smuggled payload or a tracking pixel that costs tokens for no content.
+const DATA_URI_MAX_BYTES = 65_536;
+
 type HiddenKind = 'shown' | 'hidden' | 'code';
 const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
-  if (opts.includeHidden || !el.hasAttribute('hidden')) return 'shown';
+  if (opts.includeHidden) return 'shown';
+  if (isStyleHidden(el)) return 'hidden';
+  if (!el.hasAttribute('hidden')) return 'shown';
   if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return 'shown';
   // A tab panel is a block: all 27 on the corpus are <div>s, and `<a><span hidden role="tabpanel">` printed its text
   // as the link's (T124 panel: mimo).
@@ -1322,7 +1336,8 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
       continue;
     }
     if (tag === 'A') {
-      const href = absUrl(c.getAttribute('href') || '', opts.baseUrl);
+      const rawHref = absUrl(c.getAttribute('href') || '', opts.baseUrl);
+      const href = isSafeHref(rawHref) ? rawHref : '';
       const text = linkText(c, opts, href, excludeEls, false);
       add(wrapInline(text, (t) => (href ? `[${t}](${mdUrl(href)})` : t)), true, visibleText(c, text));
       continue;
@@ -1354,7 +1369,8 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
       }
       const alt = cleanInline(c.getAttribute('alt') || '');
       const src = absUrl(c.getAttribute('src') || c.getAttribute('data-src') || '', opts.baseUrl);
-      if (src) add(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`, true, alt || 'image');
+      if (src && !(src.startsWith('data:') && src.length > DATA_URI_MAX_BYTES)) add(`![${escapeMd(alt || 'image')}](${mdUrl(src)})`, true, alt || 'image');
+      else if (src && alt) add(` ${escapeMd(alt)} `, true, alt);
       continue;
     }
     // Any other element, inline or a container in inline position (a P or styling DIV inside an

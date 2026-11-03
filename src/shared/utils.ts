@@ -47,6 +47,10 @@ export const absUrl = (u: string | null | undefined, base?: string): string => {
   }
 };
 
+const UNSAFE_LINK_RE = /^(?:javascript|vbscript|data\s*:\s*text\/html)/i;
+
+export const isSafeHref = (href: string): boolean => !UNSAFE_LINK_RE.test(href.trim());
+
 export const cleanInline = (t: string | null | undefined): string =>
   (t || '').replace(/\u00a0/g, ' ').replace(/[ \t\r\n]+/g, ' ').trim();
 
