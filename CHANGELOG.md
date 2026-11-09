@@ -2,6 +2,22 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.3 - 2026-11-09
+
+### Added
+
+- **Fetch policy for servers that fetch on behalf of others.** `fetchProtected` and `fetchAndConvert`
+  take `allowedPorts` (checked on the URL and on every redirect hop, before DNS) and `extraBlockedIps`
+  (single addresses or CIDR ranges, checked on IP literals and on every resolved address of every hop).
+  Without the options they read `PAGE2AI_ALLOWED_PORTS` and `PAGE2AI_EXTRA_BLOCKED_IPS`
+  (comma-separated). Both only restrict, and a value that does not parse fails the fetch instead of
+  dropping the rule. A refusal for a listed address does not name the address a hostname resolved to.
+- **Abort signal.** `signal` option on both functions, and `runWithFetchSignal(signal, fn)`, which makes
+  a signal reach every fetch inside `fn` (for a server whose client went away, through code that does
+  not pass options along). An abort ends the fetch as its timeout does, with an `AbortError`.
+- **Three more IANA special-purpose IPv4 ranges refused:** `192.31.196.0/24` (AS112-v4),
+  `192.52.193.0/24` (AMT), `192.175.48.0/24` (Direct Delegation AS112 Service).
+
 ## 0.4.1 - 2026-11-03
 
 ### Fixed

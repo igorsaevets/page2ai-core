@@ -61,8 +61,13 @@ Fetches a URL and converts it to Markdown. Async.
 
 - `url` (string) — the URL to fetch
 - `opts.timeoutMs` (number) — abort after N ms (default: `15000`)
-- `opts.userAgent` (string) — custom user agent (default: `page2ai-core/0.1`)
+- `opts.userAgent` (string) — custom user agent (default: `page2ai-core/<version>`)
+- `opts.allowedPorts` (number[]) — ports the fetch may use, on the URL and on every redirect hop (default: any port, or the comma-separated list in `PAGE2AI_ALLOWED_PORTS`)
+- `opts.extraBlockedIps` (string[]) — IP addresses or CIDR ranges refused besides the built-in ones below (default: none, or the comma-separated list in `PAGE2AI_EXTRA_BLOCKED_IPS`)
+- `opts.signal` (AbortSignal) — stops the fetch the way the timeout does; `runWithFetchSignal(signal, fn)` makes a signal reach every fetch inside `fn` when code in between does not pass options along
 - ...all `htmlToMarkdown` options
+
+The two lists and the variables only restrict: they cannot allow an address the guard refuses. They are meant for a server that fetches pages for other people (the hosted Page2AI MCP endpoint sets `PAGE2AI_ALLOWED_PORTS=80,443` and blocks its own public address). A value that does not parse makes every fetch fail rather than run without the rule.
 
 Uses Node 18+ built-in `fetch()`. Follows redirects; passes the final URL to `htmlToMarkdown` as `baseUrl` unless overridden. It requests only the URL you pass: no `<url>.md` twin, no `llms.txt`, and the Accept header is the one Firefox sends when it opens a page (`text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`), so a docs platform that negotiates (Fumadocs, Mintlify, Vercel, Supabase, Stripe, the Claude docs) answers with the page a person sees, not its own Markdown copy, which can be older than the page. A URL whose path names a Markdown or text file (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mdx`, `.txt`) is the page and is returned as is, whether the server sends it as `text/markdown`, `text/x-markdown`, `text/plain` (GitHub raw does) or `application/octet-stream`. Markdown sent for any other address is refused with a `FetchProtectionError`: the request asked for HTML, so that Markdown is the site's copy, not the page. `source` in the result says which way it came (`html-parse` or `markdown-response`), and `includeFrontmatter` applies on both. The body is decoded as UTF-8 whatever charset the server declares, so a page in another encoding comes out garbled.
 

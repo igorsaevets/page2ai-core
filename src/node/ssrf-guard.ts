@@ -33,6 +33,9 @@ const BLOCKED_IPV4_PATTERNS: RegExp[] = [
   /^198\.51\.100\./,                    // 198.51.100.0/24 TEST-NET-2
   /^203\.0\.113\./,                     // 203.0.113.0/24 TEST-NET-3
   /^198\.1[89]\./,                      // 198.18.0.0/15 benchmarking
+  /^192\.31\.196\./,                    // 192.31.196.0/24 AS112-v4 (RFC 7535)
+  /^192\.52\.193\./,                    // 192.52.193.0/24 AMT (RFC 7450)
+  /^192\.175\.48\./,                    // 192.175.48.0/24 Direct Delegation AS112 Service (RFC 7534)
 ];
 
 const BLOCKED_IPV6_PREFIXES: string[] = [
