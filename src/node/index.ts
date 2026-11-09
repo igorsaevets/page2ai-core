@@ -16,6 +16,7 @@ import { parseHTML } from 'linkedom';
 import { LinkedomAdapter } from './linkedom-adapter.js';
 import { documentTitle, renderBasicMarkdown } from './basic-renderer.js';
 import { FetchProtectionError, fetchProtected } from './fetch-protected.js';
+import type { FetchPolicyOptions } from './fetch-policy.js';
 import { assertSafeUrl } from './ssrf-guard.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import type { ProfileName } from '../shared/types.js';
@@ -29,10 +30,12 @@ export interface HtmlToMarkdownOptions {
   includeHidden?: boolean;
 }
 
-export interface FetchAndConvertOptions extends HtmlToMarkdownOptions {
+export interface FetchAndConvertOptions extends HtmlToMarkdownOptions, FetchPolicyOptions {
   timeoutMs?: number;
   maxBytes?: number;
   userAgent?: string;
+  // Stops the fetch like its timeout does (fetch-policy.ts: also reaches it through runWithFetchSignal).
+  signal?: AbortSignal;
 }
 
 export interface ConversionResult {
@@ -350,6 +353,9 @@ export const fetchAndConvert = async (
     timeoutMs: opts.timeoutMs,
     maxBytes: opts.maxBytes,
     userAgent: opts.userAgent,
+    allowedPorts: opts.allowedPorts,
+    extraBlockedIps: opts.extraBlockedIps,
+    signal: opts.signal,
     acceptContentTypes: TEXT_FILE_PATH.test(pathOf(url)) ? TEXT_FILE_TYPES : undefined,
   });
 
@@ -397,3 +403,5 @@ export { LinkedomAdapter } from './linkedom-adapter.js';
 // its address rule. Both sat in the published .d.ts without being importable (P2A-009).
 export { SsrfBlockedError, assertSafeUrl, assertSafeUrlResolved, findIpBlockReason } from './ssrf-guard.js';
 export { DEFAULT_UA, FetchProtectionError, fetchProtected, getProxyForUrl, _resetHostThrottle } from './fetch-protected.js';
+export { runWithFetchSignal, resolveFetchPolicy, effectivePort } from './fetch-policy.js';
+export type { FetchPolicyOptions } from './fetch-policy.js';

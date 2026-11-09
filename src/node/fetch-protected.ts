@@ -37,13 +37,22 @@ import {
   resolveAndValidate,
   SsrfBlockedError,
 } from './ssrf-guard.js';
+import {
+  assertAddressAllowed,
+  assertPortAllowed,
+  currentFetchSignal,
+  resolveFetchPolicy,
+  type FetchPolicyOptions,
+} from './fetch-policy.js';
 import { CORE_VERSION } from '../shared/constants.js';
 
-export interface FetchProtectedOptions {
+export interface FetchProtectedOptions extends FetchPolicyOptions {
   timeoutMs?: number;
   maxBytes?: number;
   userAgent?: string;
   acceptContentTypes?: RegExp;
+  /** Stops the fetch like its timeout does. Default: the signal of an enclosing runWithFetchSignal(). */
+  signal?: AbortSignal;
 }
 
 export interface FetchProtectedResult {
@@ -167,6 +176,8 @@ export const fetchProtected = async (
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const ua = opts.userAgent ?? DEFAULT_UA;
   const accept = opts.acceptContentTypes ?? DEFAULT_ACCEPT;
+  // Before any wait or request: a policy that does not parse fails the call (fetch-policy.ts).
+  const policy = resolveFetchPolicy(opts);
 
   // Rate-limit by the initial request's host (redirect hops are not throttled).
   const entryHost = normalizeHost(new URL(rawUrl).hostname);
@@ -174,6 +185,11 @@ export const fetchProtected = async (
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // A caller's signal ends the fetch the way the timeout does (an AbortError).
+  const outer = opts.signal ?? currentFetchSignal();
+  const onOuterAbort = (): void => controller.abort();
+  if (outer?.aborted) controller.abort();
+  else outer?.addEventListener('abort', onOuterAbort, { once: true });
 
   try {
     // Follow redirects by hand: validate every hop (string checks + DNS)
@@ -185,12 +201,16 @@ export const fetchProtected = async (
     let hops = 0;
     for (;;) {
       const parsed = assertSafeUrl(currentUrl);
+      assertPortAllowed(parsed, policy, currentUrl);
       const host = normalizeHost(parsed.hostname);
       const proxyUrl = getProxyForUrl(parsed);
       let dispatcher: Agent | ProxyAgent | undefined;
 
-      if (!isIpv4Literal(host) && !host.includes(':')) {
+      if (isIpv4Literal(host) || host.includes(':')) {
+        assertAddressAllowed(host, host, policy, currentUrl);
+      } else {
         const addrs = await resolveAndValidate(host, currentUrl);
+        for (const { address } of addrs) assertAddressAllowed(address, host, policy, currentUrl);
         if (!proxyUrl) {
           dispatcher = createPinnedAgent(addrs);
         }
@@ -290,5 +310,6 @@ export const fetchProtected = async (
     throw e;
   } finally {
     clearTimeout(timer);
+    outer?.removeEventListener('abort', onOuterAbort);
   }
 };
