@@ -28,6 +28,9 @@
 //   is NOT subject to the SSRF guard. When NO_PROXY matches the target, the
 //   direct DNS-pinned path is used as before.
 //
+// - TLS: the cipher list of Mozilla's "intermediate" configuration (TLS_CIPHERS), not Node's
+//   default one; a server that speaks none of it gets one retry with Node's defaults.
+//
 // KNOWN LIMITATION: no charset detection for non-UTF-8 pages (Windows-1251 docs will
 // mojibake); a later release may add it via `fetch-charset-detection`.
 
@@ -72,6 +75,45 @@ const DEFAULT_ACCEPT = /^(text\/html|text\/markdown|text\/x-markdown|text\/plain
 // A server that answered this header with Markdown would answer every Firefox user with it.
 export const BROWSER_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
 const MAX_REDIRECTS = 10;
+
+// TLS cipher list for every outgoing connection: Mozilla's "intermediate" configuration, guidelines 6.0
+// (https://ssl-config.mozilla.org/guidelines/6.0.json, read 2026-11-12): the three TLS 1.3 suites, then the six
+// TLS 1.2 suites with ECDHE and AEAD (GCM, ChaCha20). Node's default list (24 entries on Node 24) also offers CBC
+// and DHE suites, and Cloudflare's bot checks challenge that handshake whatever the User-Agent says. Measured
+// 2026-11-12 from one PC with this module's own User-Agent: npmjs.com, openai.com and medium.com answered 403
+// `cf-mitigated: challenge` to Node's default list and 200 with the page to this one, as they did to curl. The
+// User-Agent does not change: a site still sees page2ai by name and can refuse it by name.
+export const TLS_CIPHERS = [
+  'TLS_AES_128_GCM_SHA256',
+  'TLS_AES_256_GCM_SHA384',
+  'TLS_CHACHA20_POLY1305_SHA256',
+  'ECDHE-ECDSA-AES128-GCM-SHA256',
+  'ECDHE-RSA-AES128-GCM-SHA256',
+  'ECDHE-ECDSA-AES256-GCM-SHA384',
+  'ECDHE-RSA-AES256-GCM-SHA384',
+  'ECDHE-ECDSA-CHACHA20-POLY1305',
+  'ECDHE-RSA-CHACHA20-POLY1305',
+].join(':');
+
+// 'mozilla' = TLS_CIPHERS; 'node-default' = whatever Node offers, used once for a server that refused the first.
+export type TlsProfile = 'mozilla' | 'node-default';
+const tlsOptionsFor = (profile: TlsProfile): { ciphers?: string } =>
+  profile === 'mozilla' ? { ciphers: TLS_CIPHERS } : {};
+
+// The handshake failed on the protocol or the cipher list: the server sent a handshake_failure,
+// protocol_version or insufficient_security alert, or nothing on offer matched. OpenSSL 3.0 (Node 20, 22)
+// names the first alert `ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE`, OpenSSL 3.5 (Node 24)
+// `ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE` (measured 2026-11-12). Certificate errors (CERT_HAS_EXPIRED,
+// ERR_TLS_CERT_ALTNAME_INVALID, ...) do not match: another cipher list cannot fix them.
+const TLS_NEGOTIATION_CODE =
+  /^ERR_SSL_(?:(?:SSLV3|SSL\/TLS|TLSV1)_ALERT_(?:HANDSHAKE_FAILURE|PROTOCOL_VERSION|INSUFFICIENT_SECURITY)|NO_SHARED_CIPHER|NO_CIPHERS_AVAILABLE|NO_SUITABLE_SIGNATURE_ALGORITHM)$/;
+export const isTlsNegotiationFailure = (err: unknown): boolean => {
+  for (let e: unknown = err, depth = 0; e && depth < 4; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && TLS_NEGOTIATION_CODE.test(code)) return true;
+  }
+  return false;
+};
 
 export class FetchProtectionError extends Error {
   constructor(reason: string, public readonly url: string) {
@@ -122,9 +164,11 @@ export const getProxyForUrl = (target: URL): string | null => {
 
 const createPinnedAgent = (
   addrs: { address: string; family: number }[],
+  profile: TlsProfile,
 ): Agent =>
   new Agent({
     connect: {
+      ...tlsOptionsFor(profile),
       lookup: (
         _hostname: string,
         options: { all?: boolean },
@@ -138,6 +182,9 @@ const createPinnedAgent = (
       },
     },
   });
+
+/** Test-only: the dispatcher a hostname's hop uses without a proxy. */
+export const _createPinnedAgent = createPinnedAgent;
 
 // Per-host rate limiting: prevents a looping agent from hammering one site.
 // The Map survives across tool calls because the MCP server is a long-running
@@ -204,35 +251,45 @@ export const fetchProtected = async (
       assertPortAllowed(parsed, policy, currentUrl);
       const host = normalizeHost(parsed.hostname);
       const proxyUrl = getProxyForUrl(parsed);
-      let dispatcher: Agent | ProxyAgent | undefined;
+      let addrs: { address: string; family: number }[] | null = null;
 
       if (isIpv4Literal(host) || host.includes(':')) {
         assertAddressAllowed(host, host, policy, currentUrl);
       } else {
-        const addrs = await resolveAndValidate(host, currentUrl);
+        addrs = await resolveAndValidate(host, currentUrl);
         for (const { address } of addrs) assertAddressAllowed(address, host, policy, currentUrl);
-        if (!proxyUrl) {
-          dispatcher = createPinnedAgent(addrs);
-        }
       }
-      if (proxyUrl && !dispatcher) {
-        dispatcher = new ProxyAgent({ uri: proxyUrl });
-      }
-
-      try {
-        resp = await fetch(currentUrl, {
-          signal: controller.signal,
-          headers: {
-            'user-agent': ua,
-            accept: BROWSER_ACCEPT,
-          },
-          redirect: 'manual',
-          ...(dispatcher ? { dispatcher } as Record<string, unknown> : {}),
-        } as RequestInit);
-      } finally {
-        if (dispatcher) {
+      // Through a proxy the proxy resolves the target (see the header); otherwise the socket is pinned
+      // to the validated addresses. An IP literal needs no pinning, only the TLS options.
+      const makeDispatcher = (profile: TlsProfile): Agent | ProxyAgent => {
+        if (proxyUrl) return new ProxyAgent({ uri: proxyUrl, requestTls: tlsOptionsFor(profile) });
+        if (addrs) return createPinnedAgent(addrs, profile);
+        return new Agent({ connect: tlsOptionsFor(profile) });
+      };
+      const send = async (profile: TlsProfile): Promise<Response> => {
+        const dispatcher = makeDispatcher(profile);
+        try {
+          return await fetch(currentUrl, {
+            signal: controller.signal,
+            headers: {
+              'user-agent': ua,
+              accept: BROWSER_ACCEPT,
+            },
+            redirect: 'manual',
+            dispatcher,
+          } as RequestInit);
+        } finally {
           dispatcher.close().catch(() => {});
         }
+      };
+
+      try {
+        resp = await send('mozilla');
+      } catch (err) {
+        // A server that speaks none of TLS_CIPHERS (TLS 1.2 with CBC suites only) refuses the
+        // handshake before any HTTP is sent: the same hop once more with Node's default list.
+        if (controller.signal.aborted || !isTlsNegotiationFailure(err)) throw err;
+        resp = await send('node-default');
       }
 
       if (resp.status >= 300 && resp.status < 400) {

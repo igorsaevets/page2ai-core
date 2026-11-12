@@ -190,7 +190,9 @@ describe('fetchProtected — proxy integration', () => {
       .rejects.toThrow(/SSRF|blocked/);
   });
 
-  it('no dispatcher when no proxy and target is an IP literal', async () => {
+  // Until 0.4.3 an IP literal went through Node's global dispatcher. Since 0.4.4 every hop gets an Agent of
+  // its own, because the TLS cipher list (TLS_CIPHERS) is set on the dispatcher; there is still nothing to pin.
+  it('a plain Agent (not a ProxyAgent) when no proxy and target is an IP literal', async () => {
     const fetchMock = vi.fn(async () =>
       new Response('<html><body>ok</body></html>', {
         status: 200,
@@ -202,7 +204,9 @@ describe('fetchProtected — proxy integration', () => {
     await fetchProtected('http://93.184.216.34/page');
 
     const args = fetchMock.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(args[1]).not.toHaveProperty('dispatcher');
+    expect(args[1]).toHaveProperty('dispatcher');
+    const d = args[1].dispatcher as { constructor: { name: string } };
+    expect(d.constructor.name).toBe('Agent');
   });
 });
 
