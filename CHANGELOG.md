@@ -2,6 +2,25 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.4 - 2026-11-12
+
+### Fixed
+
+- **Sites behind Cloudflare's bot checks answered 403 to every fetch.** npmjs.com, openai.com and medium.com
+  challenged the TLS handshake Node.js makes by default (`cf-mitigated: challenge`), whatever the User-Agent
+  said, while curl got the same pages with the same User-Agent. Connections now offer the cipher list of
+  Mozilla's "intermediate" TLS configuration (guidelines 6.0: the TLS 1.3 suites, plus ECDHE with AES-GCM or
+  ChaCha20 for TLS 1.2) instead of Node's default list, which also offers CBC and DHE suites. Measured
+  2026-11-12 on Node 20, 22, 24 and 26: those three sites went from 403 to the page, and Wikipedia, MDN,
+  GitHub Docs, the Claude Code docs and example.com came out byte for byte the same. The User-Agent does not
+  change (`page2ai-core/<version>`): a site still sees page2ai by name and can refuse it by name. Stack
+  Overflow still answers 403; it wants a browser (the MCP server's Agent Bridge, or the `html` argument).
+- **A server that speaks none of those suites** (TLS 1.2 with CBC or DHE suites only) refuses the handshake.
+  The same request is then made once more with Node's default list; checked on cbc.badssl.com and
+  dh2048.badssl.com. Certificate errors are not retried.
+- An IP-literal URL now goes through an undici `Agent` of its own, which carries the cipher list, instead of
+  Node's global dispatcher.
+
 ## 0.4.3 - 2026-11-09
 
 ### Added
