@@ -2,6 +2,19 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.5 - 2026-11-13
+
+### Added
+
+- **`@page2ai/core/html`: the converter alone, for a browser tab or a Web Worker.** `htmlToMarkdown` moved
+  from `src/node/index.ts` into `src/node/convert.ts`, whose imports are linkedom, css.escape and the
+  renderer only. Until now any bundle of `htmlToMarkdown` pulled in the guarded fetch (undici,
+  `node:async_hooks`, `node:net`, `node:dns/promises`), so it could run only in Node, and the browser entry
+  offered no conversion at all. The package root re-exports the same function, so `import { htmlToMarkdown }
+  from '@page2ai/core'` is unchanged, and `fetchAndConvert` converts what it fetched with it. A test walks
+  the new entry's import graph and fails on any `node:` module or undici. The Markdown is unchanged: no
+  renderer line moved or changed.
+
 ## 0.4.4 - 2026-11-12
 
 ### Fixed

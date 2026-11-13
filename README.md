@@ -10,7 +10,8 @@
 Works in Node.js (via linkedom) and in browsers.
 
 - **Node.js**: `htmlToMarkdown(html, opts)` or `fetchAndConvert(url, opts)` — zero external API calls, uses linkedom for parsing
-- **Browser**: exports `BrowserAdapter` and the `PageAdapter` interface; the full extract pipeline lives in the extension repo (a migration is planned)
+- **Browser tab or Web Worker**: `import { htmlToMarkdown } from '@page2ai/core/html'` — the same converter with no network code and no Node.js built-in, so a bundler ships it as is and the HTML never leaves the page (the [online converter](https://igorsaevets.github.io/page2ai-docs/convert/) runs it this way)
+- **Browser, live page**: exports `BrowserAdapter` and the `PageAdapter` interface; the full extract pipeline lives in the extension repo (a migration is planned)
 - **Zero data collection**: no telemetry, no analytics, no third-party calls
 - **MIT** licensed
 
@@ -54,6 +55,13 @@ Converts an HTML string to Markdown. Synchronous.
 - `opts.includeHidden` (boolean) — also convert content under the HTML `hidden` attribute, which a browser does not show (default: `false`). Tab panels, `hidden="until-found"` sections and React streaming segments are converted either way, and a hidden block that holds code contributes its code blocks and nothing else. Code, link names and tab labels never take text from a hidden element. A `<main>` under `hidden` is not taken as the page's main content while a visible one exists, and one inside a hidden tab panel or `until-found` section never is. The default is not a security boundary: those kept kinds are set by the page's own attributes, so a page can still put text a reader does not see into the output that way, and the converter reads no CSS (`display: none` is converted)
 
 Returns `{ markdown, title, baseUrl, charCount, extractedAt }`. When nothing can be extracted the Markdown says so with `<!-- AI: page has no extractable body content -->` instead of coming back empty.
+
+The same function is published alone as `@page2ai/core/html` (since 0.4.5). That entry imports only linkedom, css.escape and the renderer: no `fetch`, no undici, no `node:` module. Bundled for a browser tab or a Web Worker it gives the Markdown the package root gives in Node for the same HTML and options, and it loads nothing the HTML names: no script runs and no image, stylesheet or font is requested, because linkedom only parses.
+
+```javascript
+import { htmlToMarkdown } from '@page2ai/core/html';
+const { markdown } = htmlToMarkdown(await file.text(), { baseUrl: 'https://example.com/page' });
+```
 
 ### `fetchAndConvert(url, opts?)`
 
@@ -114,7 +122,8 @@ src/
 │   ├── constants.ts       # DEFAULTS, BLOCK_TAGS, PII patterns
 │   └── profiles.ts        # profile presets
 ├── node/             # LinkedomAdapter + htmlToMarkdown + basic-renderer
-│   ├── index.ts
+│   ├── index.ts           # package root: re-exports convert.ts, adds the guarded fetch
+│   ├── convert.ts         # htmlToMarkdown alone = '@page2ai/core/html' (no network code)
 │   ├── linkedom-adapter.ts
 │   └── basic-renderer.ts
 └── browser/          # BrowserAdapter; extract() comes with the port
