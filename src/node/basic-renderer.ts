@@ -40,6 +40,15 @@ const KNOWN_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'shellsess
 
 const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
 
+// Appends one item at a time. `target.push(...items)` (and `Math.max(...xs)`) passes every element as a separate call
+// argument, and V8 throws «RangeError: Maximum call stack size exceeded» once there are about 120,000 of them, fewer deep
+// in the walk: a page that renders to that many lines, a table with that many rows or a <dl> group with that many
+// children failed whole (P2A-031, a 90,000-row page). tests/node/long-page.test.ts keeps every call-argument spread out
+// of src/.
+const pushAll = <T>(target: T[], items: readonly T[]): void => {
+  for (const item of items) target.push(item);
+};
+
 // The page's own <title>. querySelector('title') also finds an inline icon's <svg><title>, which became
 // a fake `# IconName` heading on any page or fragment whose <head> has no title (grok, T109).
 export const documentTitle = (doc: Document): string =>
@@ -94,7 +103,7 @@ export const renderBasicMarkdown = (
   const { title } = splitSiteSuffix(doc, root, rawTitle);
 
   if (opts.includeFrontmatter) {
-    parts.push(...buildFrontmatter(doc, opts.baseUrl, title));
+    pushAll(parts, buildFrontmatter(doc, opts.baseUrl, title));
   }
 
   if (title) parts.push(`# ${title}`, '');
@@ -109,7 +118,7 @@ export const renderBasicMarkdown = (
     walkWithTabs(root, lines, opts, tabGroups, capturedPanelEls, dedupe);
     // An empty walk is said out loud: a bare "" or a lone title reads as "the page is empty"
     // when the cause is client-side rendering or markup the walk did not understand (P2A-003).
-    if (lines.some((l) => l.trim())) parts.push(...lines);
+    if (lines.some((l) => l.trim())) pushAll(parts, lines);
     else parts.push('', '<!-- AI: page has no extractable body content -->', '');
   } else {
     parts.push('', '<!-- AI: page has no extractable body content -->', '');
@@ -1407,13 +1416,17 @@ const renderDefinitionList = (
   const seq: Node[] = [];
   for (const n of dl.childNodes) {
     if (n.nodeType === 1 && isHiddenEl(n as Element, opts)) continue;
-    if (isGroup(n)) seq.push(...[...(n as Element).childNodes].filter((c) => c.nodeType !== 1 || !isHiddenEl(c as Element, opts)));
+    if (isGroup(n)) pushAll(seq, [...(n as Element).childNodes].filter((c) => c.nodeType !== 1 || !isHiddenEl(c as Element, opts)));
     else seq.push(n);
   }
   let lines: string[] = [];
   let stray: Node[] = [];
   const flushLines = (): void => {
-    if (lines.length) out.push('', ...lines, '');
+    if (lines.length) {
+      out.push('');
+      pushAll(out, lines);
+      out.push('');
+    }
     lines = [];
   };
   const flushStray = (): void => {
@@ -1646,7 +1659,7 @@ const renderTable = (tbl: Element, out: string[], opts: RenderOpts): void => {
   const caption = capEl ? escapeBlockStart(renderInline(capEl, { ...opts, ...CELL }).replace(/\s+/g, ' ').trim()) : '';
   if (caption) out.push('', caption);
   const data = tableGrid(rows, opts).map((row) => row.map((c) => (c ? cellMd(c, opts) : '')));
-  const width = Math.max(...data.map((r) => r.length));
+  const width = data.reduce((w, r) => Math.max(w, r.length), 0);
   const padded = data.map((r) => { while (r.length < width) r.push(''); return r; });
   out.push('');
   const header = padded[0];
