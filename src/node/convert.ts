@@ -20,6 +20,7 @@
 import { parseHTML } from 'linkedom';
 import { LinkedomAdapter } from './linkedom-adapter.js';
 import { documentTitle, renderBasicMarkdown } from './basic-renderer.js';
+import { opensWithHeadOrBody } from './linear-text.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import type { ProfileName } from '../shared/types.js';
 
@@ -216,8 +217,9 @@ const parseDocument = (source: string): Document => {
   const inner = source.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
   // Only a fragment that STARTS with <head> or <body> brings its own; one met later is wrapped like any
   // other content. Matching `<body` anywhere left `the <body> tag is required` outside the body, losing
-  // "the " (mimo, T109).
-  const shell = /^\s*(?:<!--[\s\S]*?-->\s*)*<(?:head|body)[\s>]/i.test(inner)
+  // "the " (mimo, T109). opensWithHeadOrBody skips the leading comments in one pass: the regex it replaced doubled its
+  // time with each comment, and 40 of them ran for hours (T241).
+  const shell = opensWithHeadOrBody(inner)
     ? `<!DOCTYPE html><html>${inner}</html>`
     : `<!DOCTYPE html><html><head></head><body>${inner}</body></html>`;
   return adoptAfterBody(parseHTML(shell).document as unknown as Document);
