@@ -2,6 +2,27 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.6 - 2026-11-13
+
+### Fixed
+
+- **A very long page failed whole with «Maximum call stack size exceeded».** A page that renders to about
+  120,000 Markdown lines or more (a huge table, log or list) came back as the error document «Page2AI
+  extraction failed» instead of its content, from `htmlToMarkdown`, `fetchAndConvert`, the MCP server and the
+  online converter alike: a 4.8 MB page of 90,000 short rows was enough. The renderer spread page-sized
+  arrays into call arguments (`push(...lines)`, `Math.max(...widths)`), and V8 refuses a call with that many
+  arguments. The calls now append in a loop: the body's lines, a definition list's lines and the children
+  of its `<div>` groups, a table's column count, and the frontmatter. That page now converts in about 2 s;
+  a 150,000-row table, a `<dl>` with 75,000 pairs and a `<dl>` group with 150,000 children have their own
+  tests, each of which fails when its one call is put back. Another test parses `src/` with the TypeScript
+  compiler and fails on any call-argument spread or `.apply` with an argument list. Every other page converts
+  as before: 1,065 saved pages (30 of ours and 1,035 from trafilatura's test set) came out byte for byte the
+  same as 0.4.5.
+- Still open: a page nested about 1,000 levels deep (blockquotes; lists about 2,000, `<div>`s about 4,000)
+  exhausts the stack in the recursive walk itself. Chrome's HTML parser stops nesting at about 512 levels
+  (measured in Chrome 157), so a page a browser parsed does not reach it; the limits are the same as in 0.4.5
+  and tracked separately.
+
 ## 0.4.5 - 2026-11-13
 
 ### Added
