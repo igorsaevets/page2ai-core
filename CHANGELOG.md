@@ -2,6 +2,31 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.7 - 2026-11-13
+
+### Fixed
+
+- **A page could hold the converter for minutes or hours.** Three regular expressions on the conversion path took
+  time that grew with the square of a run in the page, or doubled per HTML comment, and they run synchronously, so
+  the MCP server answered nothing else meanwhile. A page with no `<html>` tag whose first 30 nodes are comments took
+  about 16 s and 40 comments took hours (the check whether a fragment opens with `<head>` or `<body>`, there since
+  0.1.12); a heading holding 100,000 ideographic spaces took about 5 s and an `aria-label` of 100,000 letters about
+  3 s, growing with the square of the run. Each check is now one pass (`src/node/linear-text.ts`) and returns what
+  the regex returned, which tests compare on generated strings; the one difference follows HTML: a comment ends at
+  its first `-->`, while the old pattern let one run past it. Tests time all four pages (each took 7 to 20 s on
+  0.4.6; the budget is 1 s). A scan of the 308 regex literals in `src/` on long runs of blanks, punctuation and
+  letters found ten more that are quadratic in isolation; none is reachable from a page: two see text whose blanks
+  were already collapsed, and the conversion never calls the other eight (helpers in `src/shared/utils.ts`).
+
+### Tests
+
+- The long-page tests of 0.4.6 passed on the 0.4.5 renderer, bug included, in Vitest's `threads` pool, whose
+  workers get a 4 MB stack instead of Node's default; only the source check caught it. A new test fails when the
+  runtime no longer overflows on a 150,000-argument call, so such a run fails instead of passing quietly.
+- The source check also catches `f['apply'](t, xs)`, `(f.apply)(t, xs)`, `Reflect.construct(C, xs)` and
+  `Function.prototype.apply.call(f, t, xs)`, scans `.js`, `.mjs`, `.cjs`, `.mts`, `.cts` and `.tsx` files too, and
+  is itself tested against every form it must catch and every spread it must leave alone.
+
 ## 0.4.6 - 2026-11-13
 
 ### Fixed
@@ -9,7 +34,7 @@ All notable changes to `@page2ai/core`.
 - **A very long page failed whole with «Maximum call stack size exceeded».** A page that renders to about
   120,000 Markdown lines or more (a huge table, log or list) came back as the error document «Page2AI
   extraction failed» instead of its content, from `htmlToMarkdown`, `fetchAndConvert`, the MCP server and the
-  online converter alike: a 4.8 MB page of 90,000 short rows was enough. The renderer spread page-sized
+  online converter alike: a 4.95 MB page of 90,000 short rows was enough. The renderer spread page-sized
   arrays into call arguments (`push(...lines)`, `Math.max(...widths)`), and V8 refuses a call with that many
   arguments. The calls now append in a loop: the body's lines, a definition list's lines and the children
   of its `<div>` groups, a table's column count, and the frontmatter. That page now converts in about 2 s;
@@ -22,6 +47,12 @@ All notable changes to `@page2ai/core`.
   exhausts the stack in the recursive walk itself. Chrome's HTML parser stops nesting at about 512 levels
   (measured in Chrome 157), so a page a browser parsed does not reach it; the limits are the same as in 0.4.5
   and tracked separately.
+
+### Dependencies
+
+- The lockfile moved linkedom from 0.18.14 to 0.18.15, whose CSS parser is now `cssomnom` (GoogleChromeLabs,
+  Apache-2.0); the renderer reads no CSSOM. The published range `^0.18.11` did not change, so installs already got
+  0.18.15, and the 1,065 saved pages came out the same on both versions. (Added to this entry in 0.4.7.)
 
 ## 0.4.5 - 2026-11-13
 

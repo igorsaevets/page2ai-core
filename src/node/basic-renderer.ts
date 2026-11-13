@@ -11,6 +11,7 @@
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import { absUrl, chooseCodeFence, cleanInline, escapeMd, isSafeHref, longestRun } from '../shared/utils.js';
+import { endsWithLetteredColon, lineBreakRunsToSpace } from './linear-text.js';
 
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
@@ -658,7 +659,8 @@ const renderNode = (
     const level = Number(tag.slice(1));
     // A heading is one line, so a <br> in it, in its text or its code, is a space (T124 panel: mimo,
     // `<h2>Run <code>a<br>b</code> now</h2>` put the rest of the heading into a paragraph under it).
-    const text = renderInline(el, opts).replace(/\s*\n\s*/g, ' ').trim();
+    // In one pass: `.replace(/\s*\n\s*/g, ' ')` took seconds on a heading holding a long run of blanks (T241).
+    const text = lineBreakRunsToSpace(renderInline(el, opts)).trim();
     if (text) {
       if (dedupe.pendingTitle) {
         // Match on textContent, not the rendered markdown: escaping and link syntax
@@ -951,7 +953,8 @@ const namesItsLabel = (el: Element, opts: RenderOpts): boolean => {
   };
   for (const c of el.childNodes) walk(c);
   const label = collapseWs(s).trim().toLowerCase();
-  return /\p{L}/u.test(label) && name.endsWith(label) && /\p{L}.*:\s*$/u.test(name.slice(0, name.length - label.length));
+  // endsWithLetteredColon is `/\p{L}.*:\s*$/u.test` in one pass; the regex took seconds on a long aria-label (T241).
+  return /\p{L}/u.test(label) && name.endsWith(label) && endsWithLetteredColon(name.slice(0, name.length - label.length));
 };
 
 // The run of phrasing content a button sits in, as walkNodes forms it, and what isControlButton asks about it: letters or
