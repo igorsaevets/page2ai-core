@@ -88,7 +88,16 @@ interface TitleDedupe {
   pendingTitle: string;
 }
 
-export const renderBasicMarkdown = (
+// The caches are emptied when a render starts and again when it ends, so this module keeps no reference to a document
+// it has converted (P2A-039: 0.4.9's id index held the last document until the next render, 45.7 MB after a 1.3 MB page).
+export const renderBasicMarkdown = (doc: Document, adapter: PageAdapter, opts: RenderOpts): string => {
+  try {
+    return renderOnce(doc, adapter, opts);
+  } finally {
+    resetButtonCaches();
+  }
+};
+const renderOnce = (
   doc: Document,
   adapter: PageAdapter,
   opts: RenderOpts,

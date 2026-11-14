@@ -8,8 +8,11 @@
 
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
+import { parseHTML } from 'linkedom';
 import { describe, expect, it } from 'vitest';
+import { renderBasicMarkdown } from '../../src/node/basic-renderer.js';
 import { htmlToMarkdown } from '../../src/node/convert.js';
+import { LinkedomAdapter } from '../../src/node/linkedom-adapter.js';
 
 const convert = (body: string): string =>
   htmlToMarkdown(`<html><body><main>${body}</main></body></html>`, {
@@ -68,26 +71,31 @@ describe('a tab panel or label inside a <template> is found, as getElementById f
 });
 
 describe('a converted document is not kept after the conversion (P2A-039)', () => {
-  it('a page of 40,000 ids and a tab list leaves under 20 MB of heap after a gc (45.7 MB on 0.4.9)', () => {
-    // The same switch Jest uses for its leak check: --expose-gc set at run time, gc taken from a new context.
+  // Parse, render and return only a WeakRef, so no frame of the test holds the document.
+  const renderAndForget = (): WeakRef<object> => {
+    const { document } = parseHTML(
+      `<html><body><main>${tablist([['t1', 'A'], ['t2', 'B']])}<div id="t1">1</div><div id="t2">2</div></main></body></html>`,
+    );
+    const doc = document as unknown as Document;
+    const adapter = new LinkedomAdapter(doc, 'https://example.com/');
+    const md = renderBasicMarkdown(doc, adapter, {
+      baseUrl: 'https://example.com/', includeFrontmatter: false, includeImages: true, includeHidden: false,
+    });
+    expect(md).toContain('### Tab: B');
+    return new WeakRef(document);
+  };
+
+  it('the renderer holds no reference to a document once it has rendered it (0.4.9 held the last one)', async () => {
+    // The switch Jest uses for its leak check: --expose-gc set at run time, gc taken from a new context.
     setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc') as () => void;
-    const body =
-      Array.from({ length: 40_000 }, (_, i) => `<p id="q${i}">paragraph ${i} with some words</p>`).join('') +
-      tablist([['t1', 'A'], ['t2', 'B']]) +
-      '<div id="t1">1</div><div id="t2">2</div>';
+    const ref = renderAndForget();
+    // A WeakRef keeps its target alive until the current job ends.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     gc();
     gc();
-    const before = process.memoryUsage().heapUsed;
-    let markdown: string | null = convert(body);
-    expect(markdown.length).toBeGreaterThan(1_000_000);
-    expect(markdown).toContain('### Tab: B');
-    markdown = null;
-    gc();
-    gc();
-    const retainedMb = (process.memoryUsage().heapUsed - before) / 1_048_576;
-    expect(retainedMb).toBeLessThan(20);
-  }, 60_000);
+    expect(ref.deref()).toBeUndefined();
+  });
 });
 
 describe('spaces around the ids in aria-labelledby (P2A-040)', () => {
