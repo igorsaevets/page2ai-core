@@ -966,13 +966,13 @@ const NO_RUN: Run = { words: false, pieces: 0, next: null };
 let ownTextCache = new WeakMap<Element, boolean>();
 let runCache = new WeakMap<Element, Map<Node, Run>>();
 let boxCache = new WeakMap<Element, boolean>();
-// How many <pre> an element holds (renderCodeBlock asks it of up to three ancestors of every <pre>, P2A-037), and
+// How many <pre> an element holds (renderCodeBlock asks it of up to three ancestors of every <pre>, P2A-038), and
 // whether a hidden element holds one (hiddenKind, asked of every hidden ancestor of every table row and article:
 // 12,000 rows of one hidden <tbody> took 19 s in 0.4.8).
 let preCountCache = new WeakMap<Element, number>();
 let hasPreCache = new WeakMap<Element, boolean>();
 // The first element with each id in document order, as getElementById returns it. linkedom's getElementById walks the
-// whole tree, so a tab list of n tabs looked its panels up at O(n) each: 12,000 tabs took 13 s in 0.4.8 (P2A-037).
+// whole tree, so a tab list of n tabs looked its panels up at O(n) each: 12,000 tabs took 13 s in 0.4.8 (P2A-038).
 let idIndex: Map<string, Element> | null = null;
 let idIndexDoc: Document | null = null;
 // Per render: the caches hold answers about one document as renderBasicMarkdown sees it.
@@ -1511,7 +1511,7 @@ const normalizeLang = (raw: string, knownOnly: boolean): string => {
 };
 
 // Counted once per element and render: asked afresh for every <pre>, a container of n code blocks was searched n times,
-// so 8,000 sibling <pre> (96 KB) took 20 s in 0.4.8 (P2A-037).
+// so 8,000 sibling <pre> (96 KB) took 20 s in 0.4.8 (P2A-038).
 const preCount = (el: Element): number => {
   let v = preCountCache.get(el);
   if (v === undefined) preCountCache.set(el, (v = el.querySelectorAll('pre').length));
