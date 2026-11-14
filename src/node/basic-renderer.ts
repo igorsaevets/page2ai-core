@@ -405,10 +405,9 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       if (!label) continue;
       const controls = tab.getAttribute('aria-controls');
       if (!controls) continue;
-      // linkedom supports getElementById via document.getElementById
       const doc = tl.ownerDocument;
       if (!doc) continue;
-      const panel = doc.getElementById(controls);
+      const panel = elementById(doc, controls);
       // A panel outside the content root is not part of it: a hidden block anywhere on the page was one aria-controls
       // away from being printed (T124 panel: ocmimo).
       if (!panel || !root.contains(panel)) continue;
@@ -436,7 +435,7 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       const labelledText = labelledBy && doc
         ? labelledBy
             .split(/\s+/)
-            .map((id) => { const e = doc.getElementById(id); return e ? nameText(e, opts) : ''; })
+            .map((id) => { const e = elementById(doc, id); return e ? nameText(e, opts) : ''; })
             .join(' ')
             .replace(/\s+/g, ' ')
             .trim()
@@ -967,11 +966,37 @@ const NO_RUN: Run = { words: false, pieces: 0, next: null };
 let ownTextCache = new WeakMap<Element, boolean>();
 let runCache = new WeakMap<Element, Map<Node, Run>>();
 let boxCache = new WeakMap<Element, boolean>();
+// How many <pre> an element holds (renderCodeBlock asks it of up to three ancestors of every <pre>, P2A-037), and
+// whether a hidden element holds one (hiddenKind, asked of every hidden ancestor of every table row and article:
+// 12,000 rows of one hidden <tbody> took 19 s in 0.4.8).
+let preCountCache = new WeakMap<Element, number>();
+let hasPreCache = new WeakMap<Element, boolean>();
+// The first element with each id in document order, as getElementById returns it. linkedom's getElementById walks the
+// whole tree, so a tab list of n tabs looked its panels up at O(n) each: 12,000 tabs took 13 s in 0.4.8 (P2A-037).
+let idIndex: Map<string, Element> | null = null;
+let idIndexDoc: Document | null = null;
 // Per render: the caches hold answers about one document as renderBasicMarkdown sees it.
 const resetButtonCaches = (): void => {
   ownTextCache = new WeakMap();
   runCache = new WeakMap();
   boxCache = new WeakMap();
+  preCountCache = new WeakMap();
+  hasPreCache = new WeakMap();
+  idIndex = null;
+  idIndexDoc = null;
+};
+const elementById = (doc: Document, id: string): Element | null => {
+  // getElementById('') answers the first element whose id is '' (linkedom compares `.id`, '' when absent): keep it.
+  if (!id) return doc.getElementById(id);
+  if (!idIndex || idIndexDoc !== doc) {
+    idIndex = new Map();
+    for (const e of doc.querySelectorAll('[id]')) {
+      const v = e.getAttribute('id') || '';
+      if (v && !idIndex.has(v)) idIndex.set(v, e as unknown as Element);
+    }
+    idIndexDoc = doc;
+  }
+  return idIndex.get(id) ?? null;
 };
 
 // A non-blank text node among an element's children: walkNodes' parentHasText, which makes a custom element phrasing.
@@ -1096,7 +1121,9 @@ const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
   // A tab panel is a block: all 27 on the corpus are <div>s, and `<a><span hidden role="tabpanel">` printed its text
   // as the link's (T124 panel: mimo).
   if ((el.getAttribute('role') === 'tabpanel' && !PHRASING_TAGS.has(el.tagName)) || el.tagName === 'PRE' || isReactSegment(el)) return 'shown';
-  return el.querySelector('pre') ? 'code' : 'hidden';
+  let hasPre = hasPreCache.get(el);
+  if (hasPre === undefined) hasPreCache.set(el, (hasPre = !!el.querySelector('pre')));
+  return hasPre ? 'code' : 'hidden';
 };
 const isHiddenEl = (el: Element, opts: RenderOpts): boolean => hiddenKind(el, opts) !== 'shown';
 // Under the attribute at all, the kept kinds included. Code, a link's name, a tab's label and the page's <main> must not
@@ -1483,6 +1510,14 @@ const normalizeLang = (raw: string, knownOnly: boolean): string => {
   return '';
 };
 
+// Counted once per element and render: asked afresh for every <pre>, a container of n code blocks was searched n times,
+// so 8,000 sibling <pre> (96 KB) took 20 s in 0.4.8 (P2A-037).
+const preCount = (el: Element): number => {
+  let v = preCountCache.get(el);
+  if (v === undefined) preCountCache.set(el, (v = el.querySelectorAll('pre').length));
+  return v;
+};
+
 const renderCodeBlock = (pre: Element, out: string[], opts: RenderOpts): void => {
   // The first <code> not under a hidden element: a hidden one replaced the visible text (T124 panel: codex,
   // `<pre>VISIBLE<code hidden>SECRET</code>TAIL</pre>` printed SECRET where Chromium shows VISIBLETAIL).
@@ -1508,7 +1543,7 @@ const renderCodeBlock = (pre: Element, out: string[], opts: RenderOpts): void =>
   const ancestors: Element[] = [];
   let anc = pre.parentElement as Element | null;
   for (let i = 0; i < 3 && anc; i++) {
-    if (anc.querySelectorAll('pre').length <= 1) ancestors.push(anc);
+    if (preCount(anc) <= 1) ancestors.push(anc);
     anc = anc.parentElement as Element | null;
   }
   const ancestorBlob = ancestors.map((e) => e.getAttribute('class') || '').join(' ');

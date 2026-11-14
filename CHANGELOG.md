@@ -2,6 +2,29 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.9 - 2026-11-14
+
+### Fixed
+
+- **A page of many code blocks, tabs or hidden rows could hold the converter for a minute.** 0.4.8 swept only the
+  inline children of one element; block children had their own quadratic paths, each a question asked of a shared
+  ancestor or of the whole document once per child. For every `<pre>`, the language rule counted the `<pre>` elements
+  under each of its three nearest ancestors (an ancestor holding more than one gives no language), so a container of
+  n code blocks was searched n times: 8,000 sibling blocks (96 KB) took 20 s, and 12,000 blocks under one
+  `language-*` wrapper 108 s (867 KB). Every tab's `aria-controls` and every panel's `aria-labelledby` was looked up
+  with linkedom's `getElementById`, which walks the whole tree: 12,000 tabs with their panels took 25 s. Every table
+  row and article asked each hidden ancestor whether it holds a `<pre>` (a hidden block with one is printed as code):
+  12,000 rows of a hidden `<tbody>` took 19 s. Each answer is now computed once per element and render (an id index
+  built on the first lookup keeps `getElementById`'s first-in-document-order answer), and the same pages take 0.1 to
+  0.3 s. A sweep of 36 block, hidden and ARIA shapes at 3,000 and 12,000 entries found 9 quadratic on 0.4.8 and none
+  on 0.4.9. On 1,065 saved pages the Markdown is byte-identical to 0.4.8; 33 of them have an ancestor holding two or
+  more `<pre>`, 26 have tab references and 59 hidden elements.
+
+### Tests
+
+- Eight pages with 6,000 to 12,000 code blocks, tabs, tab panels, hidden rows or hidden articles are timed (6 to 20 s
+  each on 0.4.8; the budget is 1 s), and the language rule is tested for an ancestor around one and two code blocks.
+
 ## 0.4.8 - 2026-11-13
 
 ### Fixed
