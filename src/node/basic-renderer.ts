@@ -11,7 +11,7 @@
 import type { PageAdapter } from '../shared/page-adapter.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import { absUrl, chooseCodeFence, cleanInline, escapeMd, isSafeHref, longestRun } from '../shared/utils.js';
-import { endsWithLetteredColon, lineBreakRunsToSpace } from './linear-text.js';
+import { endsWithLetteredColon, InlineText, lineBreakRunsToSpace } from './linear-text.js';
 
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
@@ -1246,7 +1246,6 @@ const codeSpan = (t: string): string => {
 };
 
 const WORD_START = /^[\p{L}\p{N}]/u;
-const WORD_END = /[\p{L}\p{N}]$/u;
 const PUNCT_START = /^[\p{P}\p{S}]/u;
 const PUNCT_END = /[\p{P}\p{S}]$/u;
 // Scripts written without spaces between words.
@@ -1289,25 +1288,28 @@ const wrapInline = (inner: string, wrap: (core: string) => string): string => {
 //
 // No textContent fallback for elements that render empty, except a link's name: it could only
 // resurface text the skip list removes on purpose (script, style, an icon's SVG <title>).
+//
+// The text is an InlineText, never a string read as it grows: one read of it per child made an element with
+// n inline children cost O(n²), 9 s for a paragraph of 40,000 links (P2A-035).
 const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: ElementFilter): string => {
-  let s = '';
+  const s = new InlineText();
   let afterElement = false;
   let lastVisible = '';
   let punctEdge = false;
   const add = (part: string, fromElement: boolean, visible = part, leadPunct = false): void => {
     if (!part) return;
-    if (s && !/\s$/.test(s) && !/^\s/.test(part)) {
-      if (fromElement && afterElement && ((!opts.tight && wordsTouch(lastVisible, visible)) || (s.endsWith('*') && part.startsWith('*')))) {
-        s += ' ';
-      } else if ((punctEdge && WORD_START.test(part)) || (leadPunct && WORD_END.test(s))) {
-        s += ' ';
-      } else if (fromElement && /(?:^|[^\\])(?:\\\\)*\\$/.test(s) && /^[[!*`_]/.test(part)) {
-        s += '\\';
-      } else if (fromElement && part.startsWith('[') && /(?:^|[^\\])(?:\\\\)*!$/.test(s)) {
-        s = `${s.slice(0, -1)}\\!`;
+    if (!s.isEmpty && !s.endsWithSpace() && !/^\s/.test(part)) {
+      if (fromElement && afterElement && ((!opts.tight && wordsTouch(lastVisible, visible)) || (s.endsWithStar() && part.startsWith('*')))) {
+        s.append(' ');
+      } else if ((punctEdge && WORD_START.test(part)) || (leadPunct && s.endsWithWordChar())) {
+        s.append(' ');
+      } else if (fromElement && s.endsWithOpenEscape() && /^[[!*`_]/.test(part)) {
+        s.append('\\');
+      } else if (fromElement && part.startsWith('[') && s.endsWithBareBang()) {
+        s.replaceLastChar('\\!');
       }
     }
-    s += part;
+    s.append(part);
     afterElement = fromElement;
     lastVisible = visible;
     punctEdge = false;
@@ -1390,7 +1392,7 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     const inner = renderInline(c, tag === 'BUTTON' ? { ...opts, inButton: true } : opts, excludeEls);
     add(INLINE_BLOCK_GAP.has(tag) ? ` ${inner} ` : inner, true, visibleText(c, inner));
   }
-  return s.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n');
+  return s.toString().replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n');
 };
 
 // <dl> as the extension renders it (lib/core/html-to-md.ts in page2ai-extension): each term bold
@@ -1634,10 +1636,17 @@ const flattenTable = (tbl: Element, opts: RenderOpts, excludeEls?: ElementFilter
     let line = '';
     let started = false;
     let afterTh = false;
+    // `line.endsWith(':')`, kept beside the line: reading the line once per cell made a long row quadratic
+    // (P2A-035). Every separator ends with a space; an empty cell appends nothing.
+    let endsColon = false;
     for (const { t, th } of cells) {
       if (!t && !positional) continue;
-      if (started) line += afterTh && !th ? (line.endsWith(':') ? ' ' : ': ') : ' · ';
+      if (started) {
+        line += afterTh && !th ? (endsColon ? ' ' : ': ') : ' · ';
+        endsColon = false;
+      }
       line += t;
+      if (t) endsColon = t.endsWith(':');
       started = true;
       afterTh = th;
     }
