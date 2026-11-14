@@ -63,6 +63,9 @@ describe('P2A-031: pages that render to more than ~120,000 lines', () => {
     const md = convert(page(`<dl><div>${items}</div></dl>`));
     expect(md).toContain('**Term 0**\n: Def 0\n**Term 1**\n: Def 1\n');
     expect(linesMatching(md, /^\*\*Term \d+\*\*$/)).toHaveLength(75_000);
+    // Every description, as the list test counts them: spot checks at both ends would pass a group path that
+    // dropped the rest (T240 panel).
+    expect(linesMatching(md, /^: Def \d+$/)).toHaveLength(75_000);
     expect(md).toContain('**Term 74999**\n: Def 74999\n');
   }, TIMEOUT_MS);
 });

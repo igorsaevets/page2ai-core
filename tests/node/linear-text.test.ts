@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { htmlToMarkdown } from '../../src/node/convert.js';
-import { endsWithLetteredColon, lineBreakRunsToSpace, opensWithHeadOrBody } from '../../src/node/linear-text.js';
+import { endsWithLetteredColon, InlineText, lineBreakRunsToSpace, opensWithHeadOrBody } from '../../src/node/linear-text.js';
 
 // Every string up to `maxLen` pieces long from a seeded generator: a failure replays.
 const generated = (pieces: string[], count: number, maxLen: number, seed: number): string[] => {
@@ -58,6 +58,69 @@ describe('each one-pass function returns what its regex returned', () => {
       expect(old.test(s)).toBe(false);
       expect(opensWithHeadOrBody(s)).toBe(false);
     }
+  });
+});
+
+// Page2AI T242 (P2A-035): renderInlineNodes asked these questions of the whole text it was building, once per child.
+// InlineText answers them from the last part and two facts about the text before it; after every step of 20,000
+// generated sequences each answer must equal the old expression on the plain string built by the same steps.
+describe('InlineText answers what the old expressions answered on the whole text', () => {
+  const ch = String.fromCharCode;
+  const pieces = [
+    'a', '1', 'é', ch(0x6771), String.fromCodePoint(0x1d400), ch(0xd835), ch(0xdc00), ' ', '\n', '\t', ch(0x3000), ch(0xa0),
+    '*', '!', '[', '\\', '\\\\', '.', '`', '_', '$', 'ab', '!a', 'a!', '\\!',
+  ];
+  const questions = (t: InlineText): unknown[] => [
+    t.isEmpty, t.endsWithSpace(), t.endsWithStar(), t.endsWithWordChar(), t.endsWithOpenEscape(), t.endsWithBareBang(), t.toString(),
+  ];
+  const expressions = (s: string): unknown[] => [
+    s === '', /\s$/.test(s), s.endsWith('*'), /[\p{L}\p{N}]$/u.test(s), /(?:^|[^\\])(?:\\\\)*\\$/.test(s), /(?:^|[^\\])(?:\\\\)*!$/.test(s), s,
+  ];
+
+  it('after every append and every last-character replacement', () => {
+    let x = 7;
+    const next = (n: number): number => {
+      x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+      return (x >>> 16) % n;
+    };
+    const failures: string[] = [];
+    for (let k = 0; k < 20_000 && failures.length < 5; k++) {
+      const t = new InlineText();
+      let s = '';
+      for (let step = next(13); step > 0; step--) {
+        if (s && next(6) === 0) {
+          t.replaceLastChar('\\!');
+          s = `${s.slice(0, -1)}\\!`;
+        } else {
+          let part = '';
+          for (let j = next(3) + 1; j > 0; j--) part += pieces[next(pieces.length)];
+          t.append(part);
+          s += part;
+        }
+        const got = JSON.stringify(questions(t));
+        const want = JSON.stringify(expressions(s));
+        if (got !== want) failures.push(`${JSON.stringify(s)}: got ${got}, want ${want}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('across part boundaries: a surrogate pair, a run of backslashes, an empty part', () => {
+    const t = new InlineText();
+    t.append(ch(0xd835));
+    expect(t.endsWithWordChar()).toBe(false);
+    t.append(ch(0xdc00));
+    expect(t.endsWithWordChar()).toBe(true); // U+1D400, a letter, split over two parts
+    t.append('\\');
+    t.append('');
+    t.append('\\');
+    t.append('\\');
+    expect(t.endsWithOpenEscape()).toBe(true); // three backslashes over three parts
+    t.append('!');
+    expect(t.endsWithBareBang()).toBe(false); // the third backslash escapes it
+    t.replaceLastChar('\\!');
+    expect(t.toString()).toBe(`${ch(0xd835)}${ch(0xdc00)}\\\\\\\\!`);
+    expect(t.endsWithBareBang()).toBe(true);
   });
 });
 

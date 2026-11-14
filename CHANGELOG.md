@@ -2,6 +2,29 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.8 - 2026-11-13
+
+### Fixed
+
+- **An element with many inline children could still hold the converter for minutes.** 0.4.7 replaced three regular
+  expressions a page could stall; two more paths had the same effect without one. The inline renderer read the text
+  it was building (a regular expression, `endsWith`, `slice`) once per child, and V8 copies a string grown with `+=`
+  whole on every such read, so the time grew with the square of the element's text. On 0.4.7 a paragraph of 40,000
+  links took 9 s, and 40,000 links each after a `!` (which the renderer escapes) 130 s, from an 800 KB page; a table
+  nested in a cell re-read its growing row line once per cell the same way (80,000 header/data pairs: 11.6 s). The
+  renderer now keeps what it asks about the end of that text beside the text (`InlineText` in
+  `src/node/linear-text.ts`, and a flag in the nested-table row), and those pages take 0.27 s, 0.28 s and 0.8 s. A
+  test compares every answer `InlineText` gives with the old expression on the whole text, after each step of 20,000
+  generated sequences. A sweep of 136 shapes (16 containers by 10 kinds of child, 10,000 and 40,000 children) found
+  none whose time grows faster than its size; the 8 it flagged in one process, slowed by the heap of earlier runs, were
+  linear when re-run alone. On 1,065 saved pages the Markdown is byte-identical to 0.4.7.
+
+### Tests
+
+- Five pages with 5,000 to 10,000 children are timed (4 to 25 s each on 0.4.7; the budget is 1 s).
+- The test of a `<dl>` whose `<div>` group holds 150,000 children counts every description, as the test of the plain
+  list does; it checked only the first two and the last.
+
 ## 0.4.7 - 2026-11-13
 
 ### Fixed
