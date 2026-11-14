@@ -2,6 +2,31 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.10 - 2026-11-14
+
+### Fixed
+
+- **A tab panel kept in a `<template>` was lost in 0.4.9, and the last converted document stayed in memory
+  (P2A-039).** 0.4.9's id index came from `querySelectorAll('[id]')`, which in linkedom jumps over the children of a
+  `<template>`, while `getElementById`, which 0.4.8 called, finds them. A tab whose panel sits in a `<template>` (an
+  Alpine `x-if` panel) lost it: 0.4.8 printed `### Tab: yarn` and its code block, 0.4.9 neither. The index now walks
+  every element in document order, as `getElementById` does, and lives in a `WeakMap` per document: 0.4.9 kept the
+  last document until the next conversion (45.7 MB of heap after a 1.3 MB page; 5.7 MB on 0.4.8 and 0.4.10).
+- **A space before or after the ids in `aria-labelledby` named a tab panel with the whole page's text (P2A-040).**
+  The id list was split with its empty tokens, and linkedom's `getElementById('')` answers the `<html>` element.
+  Empty tokens are dropped now, as HTML splits a token list, and an empty id names nothing. 3,000 such panels took
+  3.6 s and wrote 9 MB of headings.
+- **Panels that name one label, and pages of thousands of tab groups, took time that grew with the square of their
+  number (P2A-041).** The label's text was computed again for every panel naming it (6,000 panels naming one label of
+  6,000 hidden spans: 3.6 s; with a 12,000-character label 21 s), and the list of tab groups was scanned for every
+  element (48,000 groups, 9 MB: 9.7 s). Each label's text is computed once per render, and a container's group is a map
+  lookup. A label shared by n panels is still written n times.
+- Found by the review panel on 0.4.9. Ten new tests (`tests/node/tab-refs.test.ts`); nine fail on 0.4.9. On 1,065
+  saved pages the Markdown is byte-identical to 0.4.9 (26 have tab references, 6 have 29 ids inside a `<template>`,
+  none a padded `aria-labelledby`), and on those pages the new index answered like `getElementById` for all 72,690
+  ids. The 36 block, hidden and ARIA shapes of 0.4.9's sweep stay linear (at most 0.34 s at 12,000 entries); 48,000
+  tab groups take 2.1 s (9.6 s on 0.4.9). Still open: deep nesting (a few thousand levels fail whole, P2A-033).
+
 ## 0.4.9 - 2026-11-14
 
 ### Fixed
