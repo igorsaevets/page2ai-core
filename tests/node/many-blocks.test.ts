@@ -1,4 +1,4 @@
-// Page2AI T243 (P2A-037, from the T242 review panel, Gemini): a container of many code blocks cost O(n²). For every
+// Page2AI T243 (P2A-038, from the T242 review panel, Gemini): a container of many code blocks cost O(n²). For every
 // <pre>, the renderer counted the <pre> elements under each of its three nearest ancestors (an ancestor wrapping more
 // than one code block gives no language), so a container of n blocks was searched n times. On core 0.4.8, 8,000
 // sibling blocks (96 KB) took 20 s and 12,000 wrapped ones 75 s, synchronously. Budget 1 s here; the fixed renderer
