@@ -88,7 +88,16 @@ interface TitleDedupe {
   pendingTitle: string;
 }
 
-export const renderBasicMarkdown = (
+// The caches are emptied when a render starts and again when it ends, so this module keeps no reference to a document
+// it has converted (P2A-039: 0.4.9's id index held the last document until the next render, 45.7 MB after a 1.3 MB page).
+export const renderBasicMarkdown = (doc: Document, adapter: PageAdapter, opts: RenderOpts): string => {
+  try {
+    return renderOnce(doc, adapter, opts);
+  } finally {
+    resetButtonCaches();
+  }
+};
+const renderOnce = (
   doc: Document,
   adapter: PageAdapter,
   opts: RenderOpts,
@@ -394,6 +403,15 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
 const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
   const groups: TabGroup[] = [];
   const seenContainers = new WeakSet<Element>();
+  // The text of each labelling element, computed once: n panels naming one large label read it n times, and 6,000 of
+  // them took 21 s in 0.4.9 (P2A-041).
+  const labelTexts = new Map<Element, string>();
+  const labelText = (e: Element | null): string => {
+    if (!e) return '';
+    let t = labelTexts.get(e);
+    if (t === undefined) labelTexts.set(e, (t = nameText(e, opts)));
+    return t;
+  };
   // Path 1: [role="tablist"] with aria-controls chain
   root.querySelectorAll('[role="tablist"]').forEach((tl) => {
     if (seenContainers.has(tl)) return;
@@ -435,7 +453,10 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       const labelledText = labelledBy && doc
         ? labelledBy
             .split(/\s+/)
-            .map((id) => { const e = elementById(doc, id); return e ? nameText(e, opts) : ''; })
+            // A space before or after the ids made an empty token, and linkedom's getElementById('') answers <html>:
+            // the panel was named with the whole page's text (P2A-040). HTML's token lists have no empty tokens.
+            .filter(Boolean)
+            .map((id) => labelText(elementById(doc, id)))
             .join(' ')
             .replace(/\s+/g, ' ')
             .trim()
@@ -512,7 +533,7 @@ const walkNodes = (
     // goes on to renderNode, which prints only its code.
     if (SKIP_TAGS.has(c.tagName) || hiddenKind(c, opts) === 'hidden' || isControlButton(c, opts)) continue;
     const phrasing = PHRASING_TAGS.has(c.tagName) || (parentHasText && c.tagName.includes('-'));
-    if (phrasing && !capturedPanelEls.has(c) && !tabGroups.some((g) => g.container === c)) {
+    if (phrasing && !capturedPanelEls.has(c) && !groupOf(tabGroups, c)) {
       if (isAriaHidden(c)) continue;
       // A link wrapping a whole card (<a><div><h3>..</h3><p>..</p></div></a>) stays a block.
       if (!hasBlockContent(c)) {
@@ -538,7 +559,7 @@ const renderNodeWithTabs = (
   // part of its tab group section, not inline.
   if (capturedPanelEls.has(el)) return;
   // If THIS element is a tab-group container, render its panels as sections.
-  const group = tabGroups.find((g) => g.container === el);
+  const group = groupOf(tabGroups, el);
   if (group) {
     for (const panel of group.panels) {
       out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
@@ -971,10 +992,13 @@ let boxCache = new WeakMap<Element, boolean>();
 // 12,000 rows of one hidden <tbody> took 19 s in 0.4.8).
 let preCountCache = new WeakMap<Element, number>();
 let hasPreCache = new WeakMap<Element, boolean>();
-// The first element with each id in document order, as getElementById returns it. linkedom's getElementById walks the
-// whole tree, so a tab list of n tabs looked its panels up at O(n) each: 12,000 tabs took 13 s in 0.4.8 (P2A-038).
-let idIndex: Map<string, Element> | null = null;
-let idIndexDoc: Document | null = null;
+// The first element with each id in document order, as linkedom's getElementById returns it. Its getElementById walks
+// the whole tree, so a tab list of n tabs looked its panels up at O(n) each: 12,000 tabs took 13 s in 0.4.8 (P2A-038).
+// The index walks every element as getElementById does, the children of a <template> included: linkedom keeps them as
+// children, and querySelectorAll jumps over them, so 0.4.9's index (built with querySelectorAll('[id]')) lost the tab
+// panels that sit in a <template> (P2A-039). Kept per document in a WeakMap: 0.4.9 held the last document in a plain
+// Map until the next render, 40 MB after a 1.3 MB page.
+let idIndexes = new WeakMap<Document, Map<string, Element>>();
 // Per render: the caches hold answers about one document as renderBasicMarkdown sees it.
 const resetButtonCaches = (): void => {
   ownTextCache = new WeakMap();
@@ -982,21 +1006,42 @@ const resetButtonCaches = (): void => {
   boxCache = new WeakMap();
   preCountCache = new WeakMap();
   hasPreCache = new WeakMap();
-  idIndex = null;
-  idIndexDoc = null;
+  idIndexes = new WeakMap();
 };
 const elementById = (doc: Document, id: string): Element | null => {
-  // getElementById('') answers the first element whose id is '' (linkedom compares `.id`, '' when absent): keep it.
-  if (!id) return doc.getElementById(id);
-  if (!idIndex || idIndexDoc !== doc) {
-    idIndex = new Map();
-    for (const e of doc.querySelectorAll('[id]')) {
-      const v = e.getAttribute('id') || '';
-      if (v && !idIndex.has(v)) idIndex.set(v, e as unknown as Element);
+  // An empty IDREF names nothing, as in a browser (linkedom's getElementById('') answers the first element without an
+  // id, P2A-040). The callers pass none: aria-controls is checked for '' and aria-labelledby drops empty tokens.
+  if (!id) return null;
+  let index = idIndexes.get(doc);
+  if (!index) {
+    index = new Map();
+    // Document order without recursion: a page can be thousands of levels deep (P2A-033).
+    const stack: Element[] = [];
+    const top = doc.children;
+    for (let i = top.length - 1; i >= 0; i--) stack.push(top[i] as Element);
+    for (let e = stack.pop(); e; e = stack.pop()) {
+      const v = e.getAttribute('id');
+      if (v && !index.has(v)) index.set(v, e);
+      const kids = e.children;
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i] as Element);
     }
-    idIndexDoc = doc;
+    idIndexes.set(doc, index);
   }
-  return idIndex.get(id) ?? null;
+  return index.get(id) ?? null;
+};
+// The tab group whose container is el, the first one as tabGroups.find answered. The list was scanned for every element:
+// 48,000 tab groups took 9.7 s in 0.4.9 (P2A-041). Keyed by the list, which discoverTabGroups builds once per render
+// and nothing changes afterwards.
+const groupIndexes = new WeakMap<TabGroup[], Map<Element, TabGroup>>();
+const groupOf = (tabGroups: TabGroup[], el: Element): TabGroup | undefined => {
+  if (!tabGroups.length) return undefined;
+  let index = groupIndexes.get(tabGroups);
+  if (!index) {
+    index = new Map();
+    for (const g of tabGroups) if (!index.has(g.container)) index.set(g.container, g);
+    groupIndexes.set(tabGroups, index);
+  }
+  return index.get(el);
 };
 
 // A non-blank text node among an element's children: walkNodes' parentHasText, which makes a custom element phrasing.
