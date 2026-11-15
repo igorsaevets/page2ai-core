@@ -121,13 +121,30 @@ const renderOnce = (
   if (title) parts.push(`# ${title}`, '');
   if (root && root.children) {
     const tabGroups = discoverTabGroups(root, opts);
-    const capturedPanelEls = new WeakSet<Element>();
-    tabGroups.forEach((g) => g.panels.forEach((p) => capturedPanelEls.add(p.el)));
-
-    const lines: string[] = [];
     void adapter;
-    const dedupe: TitleDedupe = { pendingTitle: title ? squeezeText(title) : '' };
-    walkWithTabs(root, lines, opts, tabGroups, capturedPanelEls, dedupe);
+    const pendingTitle = title ? squeezeText(title) : '';
+    const render = (unwritten: Set<Element>): string[] => {
+      const capturedPanelEls = new WeakSet<Element>();
+      tabGroups.forEach((g) => g.panels.forEach((p) => {
+        if (!unwritten.has(p.el)) capturedPanelEls.add(p.el);
+      }));
+      const out: string[] = [];
+      const dedupe: TitleDedupe = { pendingTitle };
+      walkWithTabs(root, out, opts, tabGroups, capturedPanelEls, dedupe);
+      return out;
+    };
+    let lines = render(new Set());
+    // A captured panel is written by its group, not where it stands. A group the walk never reaches (its tab list
+    // hidden, or in a hidden block) wrote nothing, and its panels were lost with it (P2A-047): the page is walked again
+    // with those panels written where they stand, without the hidden tab labels.
+    const unwritten = new Set<Element>();
+    tabGroups.forEach((g) => g.panels.forEach((p) => {
+      if (!printedPanels.has(p.el)) unwritten.add(p.el);
+    }));
+    if (unwritten.size) {
+      resetButtonCaches();
+      lines = render(unwritten);
+    }
     // An empty walk is said out loud: a bare "" or a lone title reads as "the page is empty"
     // when the cause is client-side rendering or markup the walk did not understand (P2A-003).
     if (lines.some((l) => l.trim())) pushAll(parts, lines);
@@ -404,6 +421,13 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
 // characters, and one aria-labelledby naming a label 4,000 times a 48M-character heading (P2A-042). The longest tab
 // heading on 1,065 saved pages is 189 characters (bun.html: a tab button holding a title, a command and a sentence).
 const TAB_LABEL_MAX = 300;
+// aria-selected as Chrome 157 reads it (T253, CDP Accessibility.getFullAXTree): trimmed and ASCII case-insensitive;
+// `false` is not selected, an empty value and `undefined` are no state, and any other value (`True`, ` true `, `1`) is
+// selected. An exact `=== 'true'` put a shared panel under the wrong tab and dropped a selected tab's label (P2A-049).
+const isSelectedTab = (el: Element): boolean => {
+  const v = (el.getAttribute('aria-selected') || '').trim().toLowerCase();
+  return v !== '' && v !== 'false' && v !== 'undefined';
+};
 const clipLabel = (s: string): string => {
   if (s.length <= TAB_LABEL_MAX) return s;
   let end = TAB_LABEL_MAX;
@@ -428,29 +452,44 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
     if (t === undefined) labelTexts.set(e, (t = clipLabel(nameText(e, opts).replace(/\s+/g, ' ').trim())));
     return t;
   };
-  // Path 1: [role="tablist"] with aria-controls chain
+  // Path 1: [role="tablist"] with aria-controls chain.
+  // A tab list inside another tab list adds nothing: the outer one holds every tab below it, so it is a group whenever
+  // the inner one would be, and writing it replaces its whole subtree. Collecting each nested list again cost k × n for
+  // k lists around n tabs (548 KB: 11.8 s and 1.6 GB, P2A-044); 0.4.12 skipped only the lists inside a group, so lists
+  // whose tabs name no panel still cost k × n (500 lists around 5,000 tabs: 1.3 s, P2A-046). Lists come in document
+  // order, so an outer list is met before the lists inside it. The climb stops at a list, or at an element already
+  // known to have none above it, so each element is climbed past once.
+  const lists = new WeakSet<Element>();
+  const noListAbove = new WeakSet<Element>();
+  const insideList = (tl: Element): boolean => {
+    const path: Element[] = [];
+    for (let a = tl.parentElement; a && a !== root; a = a.parentElement) {
+      if (lists.has(a)) return true;
+      if (noListAbove.has(a)) break;
+      path.push(a);
+    }
+    for (const a of path) noListAbove.add(a);
+    return false;
+  };
   root.querySelectorAll('[role="tablist"]').forEach((tl) => {
-    if (seenContainers.has(tl)) return;
-    // A tab list inside a tab list that is already a group adds nothing: the outer one holds every tab below it, so it
-    // is a group whenever the inner one would be, and writing it replaces its whole subtree. Collecting each nested
-    // list again cost k × n for k lists around n tabs (548 KB: 11.8 s and 1.6 GB, P2A-044). Lists come in document
-    // order, so an outer list is decided before the lists inside it.
-    for (let a = tl.parentElement; a && a !== root; a = a.parentElement) if (seenContainers.has(a)) return;
+    lists.add(tl);
+    if (insideList(tl)) return;
+    const doc = tl.ownerDocument;
+    if (!doc) return;
     const tabs = [...tl.querySelectorAll('[role="tab"], button')];
     const found: Array<{ label: string; el: Element; selected: boolean }> = [];
     for (const tab of tabs) {
-      // A tab's label is its name, without the text of hidden elements (T124 panel: `One<span hidden>x</span>` read Onex).
-      const label = clipLabel(cleanInline(nameText(tab, opts)));
-      if (!label) continue;
       const controls = tab.getAttribute('aria-controls');
       if (!controls) continue;
-      const doc = tl.ownerDocument;
-      if (!doc) continue;
       const panel = elementById(doc, controls);
       // A panel outside the content root is not part of it: a hidden block anywhere on the page was one aria-controls
       // away from being printed (T124 panel: ocmimo).
       if (!panel || !root.contains(panel)) continue;
-      found.push({ label, el: panel, selected: tab.getAttribute('aria-selected') === 'true' });
+      // A tab's label is its name, without the text of hidden elements (T124 panel: `One<span hidden>x</span>` read Onex).
+      // Read only for a tab that names a panel: every button's name was read first (P2A-046).
+      const label = clipLabel(cleanInline(nameText(tab, opts)));
+      if (!label) continue;
+      found.push({ label, el: panel, selected: isSelectedTab(tab) });
     }
     if (found.length >= 2) {
       // Tabs that name one panel each keep their heading, and the panel is written once, under the selected one of them,
@@ -483,14 +522,14 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       const doc = p.ownerDocument;
       let labelledText = '';
       if (labelledBy && doc) {
-        const seen = new Set<string>();
         for (const id of labelledBy.split(/\s+/)) {
           // A space before or after the ids made an empty token, and linkedom's getElementById('') answers <html>:
           // the panel was named with the whole page's text (P2A-040). HTML's token lists have no empty tokens.
-          // Each id is read once, and no more text than the heading keeps: one aria-labelledby naming a label 4,000
-          // times wrote it 4,000 times, 48M characters and 2.8 GB (P2A-042).
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
+          // A repeated id is read each time, as accname 1.2 (step 2B) and Chrome 157 read it: `x x x` names «Save Save
+          // Save» (T253; 0.4.11 read it once). No more text than the heading keeps: the loop stops past the cap and a
+          // label's text is computed once, so one aria-labelledby naming a label 4,000 times no longer writes 48M
+          // characters and 2.8 GB (P2A-042).
+          if (!id) continue;
           const t = labelText(elementById(doc, id));
           if (t) labelledText = labelledText ? `${labelledText} ${t}` : t;
           if (labelledText.length > TAB_LABEL_MAX) break;
@@ -977,7 +1016,7 @@ const isControlButton = (el: Element, opts: RenderOpts): boolean => {
   if ([...el.querySelectorAll('img, picture')].some((i) => !i.closest('[aria-hidden="true"]'))) return false;
   const box = el.closest(LABEL_BOX);
   if (box && !boxHasWords(box, opts)) return false;
-  if ((el.getAttribute('role') || '').toLowerCase() === 'tab') return el.getAttribute('aria-selected') !== 'true';
+  if ((el.getAttribute('role') || '').toLowerCase() === 'tab') return !isSelectedTab(el);
   if ((el.getAttribute('aria-haspopup') || 'false').toLowerCase() !== 'false') return true;
   if (el.hasAttribute('aria-expanded') || namesItsLabel(el, opts)) return false;
   const run = runOf(el, opts);

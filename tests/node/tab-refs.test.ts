@@ -248,7 +248,8 @@ describe('nested tab lists are collected once (P2A-044)', () => {
     expect(count(markdown, 'panel-a')).toBe(1);
     expect(count(markdown, 'panel-b')).toBe(1);
     expect(count(markdown, '### Tab: t')).toBe(5_000);
-    expect(ms).toBeLessThan(500);
+    // 30-130 ms on 0.4.12, 2.3-3.2 s on 0.4.11: 1.5 s keeps a margin both ways on a slow CI runner (T252 panel).
+    expect(ms).toBeLessThan(1_500);
   }, 120_000);
 
   it('an inner list prints through the outer one, as before', () => {
@@ -277,5 +278,80 @@ describe('a tab list inside a panel that names that panel (P2A-043)', () => {
     expect(out).toContain('Outro paragraph.');
     expect(count(out, 'text-of-p')).toBe(1);
     expect(count(out, 'text-of-q')).toBe(1);
+  });
+});
+
+describe('nested tab lists whose tabs name no panel are collected once (P2A-046)', () => {
+  // The same buttons at the same depth in plain <div>s are the control: what is left is the walk's own cost of depth
+  // (each button climbs its ancestors, P2A-033), not tab discovery. 0.4.12: 1.5 s against 0.48 s; 0.4.13: 0.52 s.
+  it('500 nested tab lists around 5,000 tabs that name no panel cost what 500 nested <div>s cost', () => {
+    const tabs = Array.from({ length: 5_000 }, (_, i) => `<button role="tab"${i % 2 ? ' aria-controls="nowhere"' : ''}>t${i}</button>`).join('');
+    const nest = (open: string): string => `<p>Before.</p>${open.repeat(500)}${tabs}${'</div>'.repeat(500)}<p>After.</p>`;
+    const divs = timed(nest('<div>'));
+    const lists = timed(nest('<div role="tablist">'));
+    expect(lists.markdown).toBe(divs.markdown);
+    expect(lists.ms).toBeLessThan(divs.ms * 2);
+  }, 120_000);
+});
+
+const twoPanels = '<div id="p1" role="tabpanel"><p>P1TEXT</p></div><div id="p2" role="tabpanel"><p>P2TEXT</p></div>';
+describe('the panels of a tab list the walk never reaches are written where they stand (P2A-047)', () => {
+  const shapes: Array<[string, string]> = [
+    ['a hidden wrapper', `<div hidden>${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}</div>${twoPanels}`],
+    ['a display:none wrapper', `<div style="display:none">${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}</div>${twoPanels}`],
+    ['a hidden tab list', `<div role="tablist" hidden><button role="tab" aria-controls="p1">HidOne</button><button role="tab" aria-controls="p2">HidTwo</button></div>${twoPanels}`],
+    ['panels before the hidden list', `${twoPanels}<div hidden>${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}</div>`],
+    ['a hidden wrapper holding code', `<div hidden>${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}<pre>code()</pre></div>${twoPanels}`],
+  ];
+  for (const [name, html] of shapes) {
+    it(`${name}: both panels once, no hidden label`, () => {
+      const out = convert(`<p>Neighbour.</p>${html}`);
+      expect(out).toContain('Neighbour.');
+      expect(count(out, 'P1TEXT')).toBe(1);
+      expect(count(out, 'P2TEXT')).toBe(1);
+      expect(out).not.toContain('HidOne');
+      expect(out).not.toContain('HidTwo');
+    });
+  }
+  it('a visible list naming the same panels still writes them under its tabs', () => {
+    const out = convert(`${tablist([['p1', 'One'], ['p2', 'Two']])}<div hidden>${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}</div>${twoPanels}`);
+    expect(out).toContain('### Tab: One\n\nP1TEXT');
+    expect(out).toContain('### Tab: Two\n\nP2TEXT');
+    expect(count(out, 'P1TEXT')).toBe(1);
+    expect(out).not.toContain('HidOne');
+  });
+  it('panels inside the hidden block stay out, as before', () => {
+    const out = convert(`<p>Neighbour.</p><div hidden>${tablist([['p1', 'HidOne'], ['p2', 'HidTwo']])}${twoPanels}</div>`);
+    expect(out).toContain('Neighbour.');
+    expect(out).not.toContain('P1TEXT');
+  });
+});
+
+describe('aria-selected is read as Chrome reads it (P2A-049)', () => {
+  const shared = (v: string): string =>
+    '<div role="tablist"><button role="tab" aria-controls="s">First</button>' +
+    `<button role="tab" aria-controls="s" aria-selected="${v}">Second</button></div><div id="s" role="tabpanel"><p>SHARED</p></div>`;
+  for (const v of ['True', 'TRUE', ' true ', '1']) {
+    it(`aria-selected="${v}" puts a shared panel under that tab`, () => {
+      expect(convert(shared(v))).toContain('### Tab: Second\n\nSHARED');
+    });
+  }
+  for (const v of ['false', 'FALSE', '', 'undefined']) {
+    it(`aria-selected="${v}" does not`, () => {
+      expect(convert(shared(v))).toContain('### Tab: First\n\nSHARED');
+    });
+  }
+  it('a selected tab outside any group keeps its label whatever the case', () => {
+    expect(convert('<p>Before.</p><div><button role="tab" aria-selected="True">LoneTabLabel</button></div><p>After.</p>')).toContain('LoneTabLabel');
+  });
+});
+
+describe('a repeated id in aria-labelledby is read each time, as accname and Chrome read it (T253)', () => {
+  it('"x x x" names a panel «Save Save Save»', () => {
+    const out = convert(
+      '<div><div role="tabpanel" data-state="active" aria-labelledby="x x x"><p>G1</p></div>' +
+        '<div role="tabpanel" data-state="inactive" aria-labelledby="y"><p>G2</p></div></div><span id="x">Save</span><span id="y">Other</span>',
+    );
+    expect(out).toContain('### Tab: Save Save Save\n\nG1');
   });
 });
