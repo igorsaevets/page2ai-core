@@ -646,21 +646,23 @@ const renderNodeWithTabs = (
   // If THIS element is a captured tab panel, skip — it will be rendered as
   // part of its tab group section, not inline.
   if (capturedPanelEls.has(el)) return;
-  if (!inPlacePanels.has(el)) {
-    renderGroupOrNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
+  // Every element of the page passes here, one stack frame per level of nesting: the in-place panel and the group write
+  // are functions of their own, called only for such an element. 0.4.14 put one more function between this one and
+  // renderNode for EVERY element, and a page survived ~13% less depth (P2A-053).
+  if (inPlacePanels.has(el)) {
+    renderInPlace(el, out, opts, tabGroups, capturedPanelEls, dedupe);
     return;
   }
-  // A panel the second walk writes where it stands (P2A-050): skipped if a group reached on this walk wrote it, and
-  // marked before its walk, so a group inside it leaves it out. Unmarked again if nothing was written (a hidden panel):
-  // a group reached later may still write it.
-  if (printedPanels.has(el)) return;
-  printedPanels.add(el);
-  const start = out.length;
-  renderGroupOrNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
-  if (out.length === start) printedPanels.delete(el);
+  // If THIS element is a tab-group container, render its panels as sections.
+  const group = groupOf(tabGroups, el);
+  if (group) writeGroup(group, out, opts, tabGroups, capturedPanelEls, dedupe);
+  else renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
 };
 
-const renderGroupOrNode = (
+// A panel the second walk writes where it stands (P2A-050): skipped if a group reached on this walk wrote it, and marked
+// before its walk, so a group inside it leaves it out. Unmarked again if nothing was written (a hidden panel): a group
+// reached later may still write it.
+const renderInPlace = (
   el: Element,
   out: string[],
   opts: RenderOpts,
@@ -668,25 +670,37 @@ const renderGroupOrNode = (
   capturedPanelEls: WeakSet<Element>,
   dedupe: TitleDedupe,
 ): void => {
-  // If THIS element is a tab-group container, render its panels as sections.
+  if (printedPanels.has(el)) return;
+  printedPanels.add(el);
+  const start = out.length;
   const group = groupOf(tabGroups, el);
-  if (group) {
-    // A panel is written once per render (P2A-042). A tab whose panel another group wrote before this one started is
-    // left out with its heading: a second tab list naming the same panels (a desktop and a mobile bar) wrote each panel
-    // twice. The panel is marked before its walk, so a tab list inside a panel that names that panel no longer recurses
-    // until the stack overflows, which failed the whole page (P2A-043). A panel written since this group started (where it
-    // stands, inside an earlier panel of this group, P2A-050) is left out with its heading too, not as an empty section.
-    const before = group.panels.map((p) => printedPanels.has(p.el));
-    group.panels.forEach((panel, i) => {
-      if (before[i] || (panel.content && printedPanels.has(panel.el))) return;
-      out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
-      if (!panel.content) return;
-      printedPanels.add(panel.el);
-      walkWithTabs(panel.el, out, opts, tabGroups, capturedPanelEls, dedupe);
-    });
-    return;
-  }
-  renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
+  if (group) writeGroup(group, out, opts, tabGroups, capturedPanelEls, dedupe);
+  else renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
+  if (out.length === start) printedPanels.delete(el);
+};
+
+const writeGroup = (
+  group: TabGroup,
+  out: string[],
+  opts: RenderOpts,
+  tabGroups: TabGroup[],
+  capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
+): void => {
+  // A panel is written once per render (P2A-042). A tab whose panel another group wrote before this one started is
+  // left out with its heading: a second tab list naming the same panels (a desktop and a mobile bar) wrote each panel
+  // twice. The panel is marked before its walk, so a tab list inside a panel that names that panel no longer recurses
+  // until the stack overflows, which failed the whole page (P2A-043). A panel written since this group started (by a tab
+  // list inside an earlier panel of this group, or where it stands) keeps its heading, bare, as a second tab naming the
+  // same panel does: that heading is the only place the tab's label is written (P2A-054; 0.4.14 left it out).
+  const before = group.panels.map((p) => printedPanels.has(p.el));
+  group.panels.forEach((panel, i) => {
+    if (before[i]) return;
+    out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
+    if (!panel.content || printedPanels.has(panel.el)) return;
+    printedPanels.add(panel.el);
+    walkWithTabs(panel.el, out, opts, tabGroups, capturedPanelEls, dedupe);
+  });
 };
 
 // P2A-014: label/value grids built from DIVs/SPANs with class hints (k/v, label/value).
