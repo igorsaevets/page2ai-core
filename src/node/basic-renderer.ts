@@ -130,13 +130,15 @@ const renderOnce = (
       }));
       const out: string[] = [];
       const dedupe: TitleDedupe = { pendingTitle };
+      inPlacePanels = unwritten;
       walkWithTabs(root, out, opts, tabGroups, capturedPanelEls, dedupe);
       return out;
     };
     let lines = render(new Set());
     // A captured panel is written by its group, not where it stands. A group the walk never reaches (its tab list
     // hidden, or in a hidden block) wrote nothing, and its panels were lost with it (P2A-047): the page is walked again
-    // with those panels written where they stand, without the hidden tab labels.
+    // with those panels written where they stand, without the hidden tab labels. A group that sits inside one of them is
+    // reached only on that second walk, and each of its panels is written once (inPlacePanels, P2A-050).
     const unwritten = new Set<Element>();
     tabGroups.forEach((g) => g.panels.forEach((p) => {
       if (!printedPanels.has(p.el)) unwritten.add(p.el);
@@ -421,11 +423,12 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
 // characters, and one aria-labelledby naming a label 4,000 times a 48M-character heading (P2A-042). The longest tab
 // heading on 1,065 saved pages is 189 characters (bun.html: a tab button holding a title, a command and a sentence).
 const TAB_LABEL_MAX = 300;
-// aria-selected as Chrome 157 reads it (T253, CDP Accessibility.getFullAXTree): trimmed and ASCII case-insensitive;
-// `false` is not selected, an empty value and `undefined` are no state, and any other value (`True`, ` true `, `1`) is
-// selected. An exact `=== 'true'` put a shared panel under the wrong tab and dropped a selected tab's label (P2A-049).
+// aria-selected as Chrome 157 reads it (CDP Accessibility.getFullAXTree): ASCII case-insensitive and NOT trimmed;
+// `false` is not selected, an empty value and `undefined` are no state, and any other value (`True`, `1`, ` false `, a
+// lone space) is selected. An exact `=== 'true'` put a shared panel under the wrong tab and dropped a selected tab's label
+// (P2A-049); 0.4.13 trimmed, so ` false ` was not selected where Chrome selects it (T254).
 const isSelectedTab = (el: Element): boolean => {
-  const v = (el.getAttribute('aria-selected') || '').trim().toLowerCase();
+  const v = (el.getAttribute('aria-selected') || '').replace(/[A-Z]+/g, (s) => s.toLowerCase());
   return v !== '' && v !== 'false' && v !== 'undefined';
 };
 const clipLabel = (s: string): string => {
@@ -458,18 +461,26 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
   // k lists around n tabs (548 KB: 11.8 s and 1.6 GB, P2A-044); 0.4.12 skipped only the lists inside a group, so lists
   // whose tabs name no panel still cost k × n (500 lists around 5,000 tabs: 1.3 s, P2A-046). Lists come in document
   // order, so an outer list is met before the lists inside it. The climb stops at a list, or at an element already
-  // known to have none above it, so each element is climbed past once.
+  // known to have a list above it or none, and records the answer for every element it passed, so each element is
+  // climbed past once. 0.4.13 recorded only «none»: 4,000 lists hanging off one chain inside an outer list each climbed
+  // the chain again (199 KB: 312 ms, T254).
   const lists = new WeakSet<Element>();
+  const listAbove = new WeakSet<Element>();
   const noListAbove = new WeakSet<Element>();
   const insideList = (tl: Element): boolean => {
     const path: Element[] = [];
+    let inside = false;
     for (let a = tl.parentElement; a && a !== root; a = a.parentElement) {
-      if (lists.has(a)) return true;
+      if (lists.has(a) || listAbove.has(a)) {
+        inside = true;
+        break;
+      }
       if (noListAbove.has(a)) break;
       path.push(a);
     }
-    for (const a of path) noListAbove.add(a);
-    return false;
+    const known = inside ? listAbove : noListAbove;
+    for (const a of path) known.add(a);
+    return inside;
   };
   root.querySelectorAll('[role="tablist"]').forEach((tl) => {
     lists.add(tl);
@@ -635,18 +646,41 @@ const renderNodeWithTabs = (
   // If THIS element is a captured tab panel, skip — it will be rendered as
   // part of its tab group section, not inline.
   if (capturedPanelEls.has(el)) return;
+  if (!inPlacePanels.has(el)) {
+    renderGroupOrNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
+    return;
+  }
+  // A panel the second walk writes where it stands (P2A-050): skipped if a group reached on this walk wrote it, and
+  // marked before its walk, so a group inside it leaves it out. Unmarked again if nothing was written (a hidden panel):
+  // a group reached later may still write it.
+  if (printedPanels.has(el)) return;
+  printedPanels.add(el);
+  const start = out.length;
+  renderGroupOrNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
+  if (out.length === start) printedPanels.delete(el);
+};
+
+const renderGroupOrNode = (
+  el: Element,
+  out: string[],
+  opts: RenderOpts,
+  tabGroups: TabGroup[],
+  capturedPanelEls: WeakSet<Element>,
+  dedupe: TitleDedupe,
+): void => {
   // If THIS element is a tab-group container, render its panels as sections.
   const group = groupOf(tabGroups, el);
   if (group) {
     // A panel is written once per render (P2A-042). A tab whose panel another group wrote before this one started is
     // left out with its heading: a second tab list naming the same panels (a desktop and a mobile bar) wrote each panel
     // twice. The panel is marked before its walk, so a tab list inside a panel that names that panel no longer recurses
-    // until the stack overflows, which failed the whole page (P2A-043).
+    // until the stack overflows, which failed the whole page (P2A-043). A panel written since this group started (where it
+    // stands, inside an earlier panel of this group, P2A-050) is left out with its heading too, not as an empty section.
     const before = group.panels.map((p) => printedPanels.has(p.el));
     group.panels.forEach((panel, i) => {
-      if (before[i]) return;
+      if (before[i] || (panel.content && printedPanels.has(panel.el))) return;
       out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
-      if (!panel.content || printedPanels.has(panel.el)) return;
+      if (!panel.content) return;
       printedPanels.add(panel.el);
       walkWithTabs(panel.el, out, opts, tabGroups, capturedPanelEls, dedupe);
     });
@@ -1094,6 +1128,7 @@ const resetButtonCaches = (): void => {
   idIndexes = new WeakMap();
   groupIndexes = new WeakMap();
   printedPanels = new WeakSet();
+  inPlacePanels = new Set();
 };
 const elementById = (doc: Document, id: string): Element | null => {
   // An empty IDREF names nothing, as in a browser (linkedom's getElementById('') answers the first element without an
@@ -1122,6 +1157,11 @@ const elementById = (doc: Document, id: string): Element | null => {
 let groupIndexes = new WeakMap<TabGroup[], Map<Element, TabGroup>>();
 // The tab panels already written in this render (P2A-042, P2A-043).
 let printedPanels = new WeakSet<Element>();
+// The panels the second walk writes where they stand (P2A-047); empty on the first walk, where every panel is captured.
+// A group the second walk reaches inside one of them (a tab widget in a panel of a hidden tab list) names panels that are
+// no longer captured: 0.4.13 wrote each of them twice, by the group and where it stands, and once more per level of
+// nesting (P2A-050). Such a panel is written once, by whichever comes first: its group or its place.
+let inPlacePanels: ReadonlySet<Element> = new Set();
 const groupOf = (tabGroups: TabGroup[], el: Element): TabGroup | undefined => {
   if (!tabGroups.length) return undefined;
   let index = groupIndexes.get(tabGroups);
@@ -1491,6 +1531,11 @@ const renderInlineNodes = (nodes: Node[], opts: RenderOpts, excludeEls?: Element
     // attribute hides from screen readers, not from the screen. `hidden` hides from both (isHiddenEl).
     const hidden = hiddenKind(c, opts);
     if (SKIP_TAGS.has(tag) || hidden === 'hidden' || isControlButton(c, opts) || (opts.inButton && isAriaHidden(c))) continue;
+    // A panel the second walk writes where it stands, inside a run, is written once too (P2A-050).
+    if (inPlacePanels.has(c)) {
+      if (printedPanels.has(c)) continue;
+      printedPanels.add(c);
+    }
     if (hidden === 'code') {
       // Each <pre> is set on its own lines by the PRE branch below.
       const code = renderInlineNodes(outerPres(c, opts), opts, excludeEls);

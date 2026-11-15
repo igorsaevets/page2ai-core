@@ -2,6 +2,28 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.14 - 2026-11-15
+
+### Fixed
+
+- **A tab widget inside a panel of an unreached tab list was written twice (P2A-050, new in 0.4.13).** 0.4.13's second
+  walk wrote such panels where they stand, and a tab list it reached inside one of them wrote its own panels, which the
+  walk then wrote again where they stand: code tabs inside a panel of a hidden tab bar came out twice, three levels
+  three times, and a tab list inside the four nested panels it names wrote the innermost one five times. A panel is now
+  written once, by its group or in its place, whichever comes first; the code tabs keep their headings. 0.4.12 lost
+  this text instead.
+- **`aria-selected` is not trimmed (P2A-049).** Chrome 157 selects ` false `, `false ` and a lone space; only `false`
+  in any case is not selected. 0.4.13 trimmed, so a shared panel went under the first tab when the second said
+  ` false `. The case is folded in ASCII only, as Chrome folds it.
+- **Lists hanging off one chain inside an outer tab list climbed it again each (P2A-046).** 0.4.13 recorded only «no
+  list above», so 4,000 such lists (199 KB) took 312 ms; each element is now climbed past once: 42 ms.
+
+### Changed
+
+- On 1,065 saved pages the output is byte-identical to 0.4.13, and the second walk runs on none of them: the changed
+  paths are reached only by the shapes in `tests/node/tab-refs.test.ts`. The 0.4.13 entry below said «trimmed» and «all
+  caches are reset»: the button, text and id caches and the written-panels set are reset; the tab groups are kept.
+
 ## 0.4.13 - 2026-11-15
 
 ### Fixed
