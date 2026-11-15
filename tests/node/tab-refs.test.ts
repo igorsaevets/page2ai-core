@@ -238,6 +238,33 @@ describe('a tab label is written with at most 300 characters (P2A-042)', () => {
   }, 120_000);
 });
 
+describe('nested tab lists are collected once (P2A-044)', () => {
+  it('1,000 nested tab lists around 5,000 tabs: linear time (2.3 s and 413 MB on 0.4.11, 11.8 s at 548 KB)', () => {
+    const tabs = Array.from({ length: 5_000 }, (_, i) => `<button role="tab" aria-controls="${i % 2 ? 'nb' : 'na'}">t${i}</button>`);
+    const { ms, markdown } = timed(
+      `${'<div role="tablist">'.repeat(1_000)}${tabs.join('')}${'</div>'.repeat(1_000)}` +
+        '<div id="na" role="tabpanel">panel-a</div><div id="nb" role="tabpanel">panel-b</div>',
+    );
+    expect(count(markdown, 'panel-a')).toBe(1);
+    expect(count(markdown, 'panel-b')).toBe(1);
+    expect(count(markdown, '### Tab: t')).toBe(5_000);
+    expect(ms).toBeLessThan(500);
+  }, 120_000);
+
+  it('an inner list prints through the outer one, as before', () => {
+    const out = convert(
+      '<div role="tablist"><button role="tab" aria-controls="o1">Outer</button>' +
+        '<div role="tablist"><button role="tab" aria-controls="i1">Inner one</button>' +
+        '<button role="tab" aria-controls="i2">Inner two</button></div></div>' +
+        '<div id="o1" role="tabpanel">outer-panel</div><div id="i1" role="tabpanel">inner-1</div>' +
+        '<div id="i2" role="tabpanel">inner-2</div>',
+    );
+    expect(out).toContain('### Tab: Outer\n\nouter-panel');
+    expect(out).toContain('### Tab: Inner one\n\ninner-1');
+    expect(out).toContain('### Tab: Inner two\n\ninner-2');
+  });
+});
+
 describe('a tab list inside a panel that names that panel (P2A-043)', () => {
   it('converts, and each panel is written once (0.4.10 failed the whole page: Maximum call stack size exceeded)', () => {
     const out = convert(

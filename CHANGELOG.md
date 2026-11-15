@@ -2,6 +2,20 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.12 - 2026-11-15
+
+### Fixed
+
+- **Nested tab lists each collected every tab inside them (P2A-044).** Every `role="tablist"` gathered all the tabs
+  below it, so k lists nested around n tabs built k × n entries and computed a name for each: 1,000 lists around 5,000
+  tabs (273 KB) took 2.3 s and 413 MB, 2,000 around 10,000 (548 KB) 11.8 s and 1.6 GB; the output was two panels. A
+  list inside a list that is already a tab group is skipped: the outer list holds every tab below it, so it is a group
+  whenever the inner one would be, and writing it replaces its whole subtree, so the inner group was never written.
+  The 548 KB page now takes 0.13 s and 32 MB.
+- Found while looking for other super-linear paths after P2A-042. Two new tests (`tests/node/tab-refs.test.ts`): the
+  timing one fails on 0.4.11, the other pins that an inner list's tabs still print through the outer list. On 1,065
+  saved pages the Markdown is byte-identical to 0.4.11 (37 have tab lists, 90 in all; one has 5 nested lists).
+
 ## 0.4.11 - 2026-11-15
 
 ### Fixed
