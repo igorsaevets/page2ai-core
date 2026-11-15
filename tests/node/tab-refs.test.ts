@@ -306,11 +306,16 @@ describe('nested tab lists whose tabs name no panel are collected once (P2A-046)
   }, 240_000);
 
   // Lists hanging off one chain of wrappers inside an outer list: 0.4.13 recorded only «no list above», so each of them
-  // climbed the chain again (4,000 lists, 199 KB: 312 ms against 42 ms once each climb is recorded, T254).
-  it('3,000 tab lists hanging off one chain inside an outer list cost what the same <div>s cost', () => {
+  // climbed the chain again. That cost shows only on a chain deeper than any build's stack: the T254 version of this test
+  // (3,000 deep) and its 312 → 42 ms timed the «extraction failed» document in both arms (T254 panel: Hy4, DeepSeek). At a
+  // depth that converts, 0.4.13 costs 1.37× the same <div>s and 0.4.14 1.12× (300 levels, 6,000 lists, T255), so this
+  // test guards the output and gross cost, not the climb.
+  it('6,000 tab lists hanging off one 300-deep chain inside an outer list convert as the same <div>s do', () => {
     const hang = (inner: string): string =>
-      `<div role="tablist">${`<div>${inner}<span>x</span></div>`.repeat(3_000)}${'</div>'.repeat(3_000)}</div>`;
+      `<div role="tablist">${`<div>${`${inner}<span>x</span></div>`.repeat(20)}`.repeat(300)}${'</div>'.repeat(300)}</div>`;
     const [divs, lists] = fastest([hang('<div>'), hang('<div role="tablist">')]);
+    expect(count(divs.markdown, 'x')).toBe(6_000);
+    expect(lists.markdown).toBe(divs.markdown);
     expect(lists.ms).toBeLessThan(divs.ms * 2 + 20);
   }, 240_000);
 });
@@ -430,6 +435,21 @@ describe('a tab widget inside a panel of an unreached tab list is written once (
     );
     expect(out).toContain('### Tab: H1\n\nHTEXT');
     once(out, ['HTEXT', 'XTEXT', 'KTEXT']);
+  });
+});
+
+describe('a tab whose panel a nested tab list already wrote keeps its heading (P2A-054)', () => {
+  // The tab's label is written only in its heading: an unselected tab is a control, not text. 0.4.14 left the heading out
+  // together with the panel, so «Beta» was nowhere in the Markdown; 0.4.13 and before wrote it bare, as P2A-042 does for a
+  // second tab naming the same panel.
+  it('the outer tab keeps a bare heading, the panel is written once under the inner tab', () => {
+    const out = convert(
+      `${tablist([['a', 'Alpha'], ['b', 'Beta']])}<div id="a"><p>ATEXT</p>${tablist([['b', 'Bee'], ['c', 'Cee']])}</div>` +
+        '<div id="c"><p>CTEXT</p></div><div id="b"><p>BTEXT</p></div>',
+    );
+    expect(out).toContain('### Tab: Bee\n\nBTEXT');
+    expect(out).toContain('### Tab: Beta');
+    for (const t of ['ATEXT', 'BTEXT', 'CTEXT', '### Tab: Beta']) expect(count(out, t), t).toBe(1);
   });
 });
 

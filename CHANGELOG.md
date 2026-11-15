@@ -2,6 +2,44 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.15 - 2026-11-15
+
+### Fixed
+
+- **A page survived ~13% less nesting depth on 0.4.14 (P2A-053, new in 0.4.14).** 0.4.14 put one more function between
+  `renderNodeWithTabs` and `renderNode` for every element, not only for tab groups, so each level of nesting cost one more
+  stack frame, and a deeper page became the «extraction failed» document. Nested `<div>`s that convert in a fresh process:
+  0.4.13 793, 0.4.14 691, 0.4.15 799; after a warm-up, in one build tree, 0.4.14 1,734 and 0.4.15 2,181 (binary search,
+  each trial a fresh process). The in-place panel and the group write are functions of their own again, called only for
+  such an element. The depth limit itself is P2A-033.
+- **A tab whose panel a nested tab list already wrote lost its heading, and with it its label (P2A-054, new in 0.4.14).**
+  0.4.14 left out, heading included, a panel written since its group started. An unselected tab is a control, so the label
+  is written only in its heading: in `[Alpha][Beta]` whose panel B the inner list `[Bee][Cee]` wrote, «Beta» appeared
+  nowhere. Such a tab keeps a bare `### Tab: Beta` again, as before 0.4.14 and as a second tab naming the same panel does
+  (P2A-042).
+
+### Corrections to the 0.4.14 entry
+
+- The test «3,000 tab lists hanging off one chain» and the «4,000 lists: 312 → 42 ms» above timed a page too deep to
+  convert: both arms returned the «extraction failed» document (T254 panel: Hy4, DeepSeek). At a depth that converts
+  (300 levels, 6,000 lists) 0.4.13 costs 1.37× the same `<div>`s and 0.4.14 1.12×. The test now converts a 300-deep chain
+  and checks its Markdown.
+- All ten new 0.4.14 tests fail on 0.4.13, not nine: the aria-hidden test fails there too (KTEXT twice). The timing test's
+  verdict on 0.4.13 depends on the machine.
+- `aria-selected` without trim also changes a tab outside any group: a lone `role="tab"` whose value is ` false ` or a
+  lone space is selected, so its label is written where 0.4.13 skipped it as a control. As in Chrome 157, and as WAI-ARIA
+  1.2 §9.2 says («Treat any other value as true»).
+- «The code tabs keep their headings» holds when the tab list comes before its panels. A panel written where it stands
+  BEFORE its tab list (a list after its panels, a list inside its own panels, an inline panel) is written once without
+  its heading, and that list's labels are not written (filed under P2A-050). The second walk runs on none of the 1,065
+  saved pages.
+
+### Known, not fixed here
+
+- A tab panel that is a list item, a table cell, a caption or a dt/dd, or sits in a heading or alone in a link, is
+  written twice in every version (P2A-051). A panel that is itself a `<pre>`, link, list or table loses that formatting
+  when its group writes it (P2A-052).
+
 ## 0.4.14 - 2026-11-15
 
 ### Fixed
