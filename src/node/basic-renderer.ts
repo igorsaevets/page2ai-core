@@ -431,6 +431,11 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
   // Path 1: [role="tablist"] with aria-controls chain
   root.querySelectorAll('[role="tablist"]').forEach((tl) => {
     if (seenContainers.has(tl)) return;
+    // A tab list inside a tab list that is already a group adds nothing: the outer one holds every tab below it, so it
+    // is a group whenever the inner one would be, and writing it replaces its whole subtree. Collecting each nested
+    // list again cost k × n for k lists around n tabs (548 KB: 11.8 s and 1.6 GB, P2A-044). Lists come in document
+    // order, so an outer list is decided before the lists inside it.
+    for (let a = tl.parentElement; a && a !== root; a = a.parentElement) if (seenContainers.has(a)) return;
     const tabs = [...tl.querySelectorAll('[role="tab"], button')];
     const found: Array<{ label: string; el: Element; selected: boolean }> = [];
     for (const tab of tabs) {
