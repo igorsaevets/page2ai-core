@@ -152,3 +152,103 @@ describe('panels that name one label compute its text once (P2A-041)', () => {
     expect(out).toContain('between **bold** text');
   });
 });
+
+// Page2AI T252, from the T244 review panel (P2A-042) and found while measuring it (P2A-043); all fail on 0.4.10.
+const sharing = (labels: string[], selected = ''): string =>
+  `<div role="tablist">${labels
+    .map((l) => `<button role="tab"${l === selected ? ' aria-selected="true"' : ''} aria-controls="shared">${l}</button>`)
+    .join('')}</div>`;
+
+describe('a tab panel named by several tabs is written once (P2A-042)', () => {
+  it('every tab keeps its heading, and the panel goes under the selected tab (0.4.10 wrote it under each)', () => {
+    const out = convert(sharing(['One', 'Two', 'Three'], 'Two') + '<div id="shared" role="tabpanel"><p>output of step two</p></div>');
+    expect(count(out, 'output of step two')).toBe(1);
+    expect(out).toContain('### Tab: One\n\n### Tab: Two\n\noutput of step two\n\n### Tab: Three');
+  });
+
+  it('with no tab selected, the panel goes under the first tab that names it', () => {
+    const out = convert(sharing(['One', 'Two']) + '<div id="shared" role="tabpanel"><p>the panel</p></div>');
+    expect(count(out, 'the panel')).toBe(1);
+    expect(out).toContain('### Tab: One\n\nthe panel\n\n### Tab: Two');
+  });
+
+  it('two tab lists naming the same panels (a desktop and a mobile bar) write each panel and heading once', () => {
+    const out = convert(
+      tablist([['a', 'npm'], ['b', 'yarn']]) + tablist([['a', 'npm'], ['b', 'yarn']]) +
+        '<div id="a" role="tabpanel">npm i x</div><div id="b" role="tabpanel">yarn add x</div>',
+    );
+    expect(count(out, 'npm i x')).toBe(1);
+    expect(count(out, 'yarn add x')).toBe(1);
+    expect(count(out, '### Tab: npm')).toBe(1);
+    expect(count(out, '### Tab: yarn')).toBe(1);
+  });
+
+  it('200 tabs naming one panel of 2,000 spans: linear output and time (2.1 s and 805,000 characters on 0.4.10)', () => {
+    const { ms, markdown } = timed(
+      tablist(Array.from({ length: 200 }, (_, i): [string, string] => ['big', `T${i}`])) +
+        `<div id="big" role="tabpanel">${'<span>x</span> '.repeat(2_000)}<b>end-of-panel</b></div>`,
+    );
+    expect(count(markdown, 'end-of-panel')).toBe(1);
+    expect(count(markdown, '### Tab: T')).toBe(200);
+    expect(markdown.length).toBeLessThan(20_000);
+    expect(ms).toBeLessThan(1000);
+  }, 120_000);
+});
+
+describe('a tab label is written with at most 300 characters (P2A-042)', () => {
+  it('a label of 300 characters is whole; a longer one is cut at 300 with an ellipsis, never inside a surrogate pair', () => {
+    const exact = 'a'.repeat(300);
+    const out = convert(
+      `<span id="l1">${exact}</span><span id="l2">${'b'.repeat(299)}😀${'c'.repeat(10)}</span>` +
+        '<div><div role="tabpanel" data-state="active" aria-labelledby="l1">p1</div>' +
+        '<div role="tabpanel" data-state="inactive" aria-labelledby="l2">p2</div></div>',
+    );
+    expect(out).toContain(`### Tab: ${exact}\n\np1`);
+    expect(out).toContain(`### Tab: ${'b'.repeat(299)}…\n\np2`);
+  });
+
+  it('a tab button of 400 characters is cut as well', () => {
+    const out = convert(tablist([['x1', 'w '.repeat(200)], ['x2', 'short']]) + '<div id="x1">one</div><div id="x2">two</div>');
+    const heading = out.split('\n').find((l) => l.startsWith('### Tab: w'));
+    expect(heading).toBe(`### Tab: ${'w '.repeat(150).trimEnd()}…`);
+  });
+
+  it('one aria-labelledby naming a label 1,000 times: one short heading (4M characters on 0.4.10)', () => {
+    const { ms, markdown } = timed(
+      `<div id="lab">${'<span>w </span>'.repeat(2_000)}</div><div>` +
+        `<div role="tabpanel" data-state="active" aria-labelledby="${'lab '.repeat(1_000)}">p1</div>` +
+        '<div role="tabpanel" data-state="inactive" aria-labelledby="lab2">p2</div></div><span id="lab2">two</span>',
+    );
+    const heading = markdown.split('\n').find((l) => l.startsWith('### Tab: w'));
+    expect(heading?.length).toBeLessThanOrEqual('### Tab: '.length + 301);
+    expect(heading?.endsWith('…')).toBe(true);
+    expect(markdown.length).toBeLessThan(10_000);
+    expect(ms).toBeLessThan(1000);
+  }, 120_000);
+
+  it('3,000 panels naming one label of 2,000 words: each heading is cut (30M characters on 0.4.10)', () => {
+    const { ms, markdown } = timed(
+      `<div id="lab">${'<span>word </span>'.repeat(2_000)}</div><div>` +
+        '<div role="tabpanel" data-state="inactive" aria-labelledby="lab">p</div>'.repeat(3_000) +
+        '</div>',
+    );
+    expect(count(markdown, '### Tab: word word')).toBe(3_000);
+    expect(markdown.length).toBeLessThan(3_000 * 330 + 20_000);
+    expect(ms).toBeLessThan(2000);
+  }, 120_000);
+});
+
+describe('a tab list inside a panel that names that panel (P2A-043)', () => {
+  it('converts, and each panel is written once (0.4.10 failed the whole page: Maximum call stack size exceeded)', () => {
+    const out = convert(
+      '<p>Intro paragraph.</p>' +
+        tablist([['p', 'A'], ['q', 'B']]) +
+        `<div id="p" role="tabpanel">${tablist([['p', 'C'], ['q', 'D']])}<p>text-of-p</p></div>` +
+        '<div id="q" role="tabpanel"><p>text-of-q</p></div><p>Outro paragraph.</p>',
+    );
+    expect(out).toContain('Intro paragraph.');
+    expect(out).toContain('Outro paragraph.');
+    expect(count(out, 'text-of-p')).toBe(1);
+    expect(count(out, 'text-of-q')).toBe(1);
+  });
+});
