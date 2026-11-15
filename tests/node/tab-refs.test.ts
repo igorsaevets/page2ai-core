@@ -453,6 +453,67 @@ describe('a tab whose panel a nested tab list already wrote keeps its heading (P
   });
 });
 
+describe('a chain of tab groups or of second-walk panels costs no more stack per level than plain <div>s (P2A-055)', () => {
+  // The walk recurses once per level of nesting, so the depth a page survives is the stack divided by the frames of one
+  // level. 0.4.15 still put writeGroup and its forEach callback on every level of a chain of tab groups, and renderInPlace
+  // on every level of a chain of second-walk panels: ~13% less depth there than 0.4.13 (fresh-process binary search). The
+  // frames are counted in the stack at the innermost element, between two calls of renderNodeWithTabs, which is exact on
+  // any machine where a depth limit is not.
+  const LEVELS = 20;
+  const chain = (level: (i: number, inner: string) => string): string => {
+    let s = '<p><img id="probe" src="p.png" alt="P"></p>';
+    for (let i = LEVELS; i >= 1; i--) s = level(i, s);
+    return s;
+  };
+  const framesPerLevel = (body: string): number => {
+    const { document } = parseHTML(`<html><body><main><p>Start.</p>${body}</main></body></html>`);
+    const doc = document as unknown as Document;
+    const probe = doc.getElementById('probe') as Element;
+    const own = probe.getAttribute.bind(probe);
+    const stacks: string[] = [];
+    probe.getAttribute = (name: string): string | null => {
+      if (name === 'alt') stacks.push(new Error().stack ?? '');
+      return own(name);
+    };
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = Infinity;
+    let md: string;
+    try {
+      md = renderBasicMarkdown(doc, new LinkedomAdapter(doc, 'https://example.com/'), {
+        baseUrl: 'https://example.com/', includeFrontmatter: false, includeImages: true, includeHidden: false,
+      });
+    } finally {
+      Error.stackTraceLimit = limit;
+    }
+    expect(md).toContain('p.png');
+    // The deepest stack seen at the probe: one call of renderNodeWithTabs per level, the innermost paragraph included.
+    const at = stacks
+      .map((s) => s.split('\n').flatMap((line, i) => (line.includes('renderNodeWithTabs') ? [i] : [])))
+      .reduce((a, b) => (b.length > a.length ? b : a), [] as number[]);
+    expect(at.length).toBeGreaterThan(LEVELS);
+    return Math.max(...at.slice(1).map((v, i) => v - (at[i] as number)));
+  };
+  const divs = (): number => framesPerLevel(chain((_i, inner) => `<div>${inner}</div>`));
+
+  it('a chain of plain <div>s: four frames per level (renderNodeWithTabs, renderNode, walkWithTabs, walkNodes)', () => {
+    // 0.4.14 put renderGroupOrNode between the first two for every element: five frames, ~13% less depth (P2A-053).
+    // A change that adds a frame here costs every page depth: it has to change this number on purpose.
+    expect(divs()).toBeLessThanOrEqual(4);
+  });
+
+  it('a chain of tab groups, each in the first panel of the last', () => {
+    const groups = framesPerLevel(chain((i, inner) =>
+      `${tablist([[`a${i}`, `A${i}`], [`b${i}`, `B${i}`]])}<div id="a${i}">${inner}</div><div id="b${i}">B${i}</div>`));
+    expect(groups).toBeLessThanOrEqual(divs());
+  });
+
+  it('a chain of panels of hidden tab lists, each written where it stands on the second walk', () => {
+    const inPlace = framesPerLevel(chain((i, inner) =>
+      `<div hidden>${tablist([[`q${i}`, `Q${i}`], [`r${i}`, `R${i}`]])}</div><div id="q${i}">${inner}</div><div id="r${i}">R${i}</div>`));
+    expect(inPlace).toBeLessThanOrEqual(divs());
+  });
+});
+
 describe('a repeated id in aria-labelledby is read each time, as accname and Chrome read it (T253)', () => {
   it('"x x x" names a panel «Save Save Save»', () => {
     const out = convert(

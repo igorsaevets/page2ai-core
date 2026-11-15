@@ -2,6 +2,35 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.16 - 2026-11-15
+
+### Fixed
+
+- **A chain of tab groups or of second-walk panels still survived ~13% less nesting than on 0.4.13 (P2A-055, left by
+  0.4.15).** 0.4.15 took the extra stack frame off the plain path only: each level of a chain of tab groups still went
+  through `writeGroup` and its `forEach` callback, and each level of a chain of panels written where they stand (second
+  walk) through `renderInPlace`. Levels that convert in a fresh process, 0.4.13 / 0.4.15 / 0.4.16: tab groups each in the
+  first panel of the last 1,005 / 871 / 1,108; panels of hidden tab lists each in the last 798 / 690 / 804; plain `<div>`,
+  `<ul><li>` and `<blockquote>` chains as on 0.4.15 within the search step of 3 (801, 942, 801).
+  `writeGroup` loops without a callback, and an in-place panel is marked and unmarked by two small calls that return
+  before the walk goes deeper. A test counts the stack frames between two levels at the innermost element: four for
+  plain `<div>`s (0.4.14 had five) and no more for a chain of tab groups (0.4.13 five, 0.4.15 six) or of second-walk
+  panels (0.4.15 five). The depth limit itself is P2A-033.
+
+### Corrections to the 0.4.15 entry
+
+- «One stack frame per level again» and «are functions of their own again» held for the plain path only: in 0.4.13 the
+  group write was inside `renderNodeWithTabs` and a second-walk panel went through `renderNode` like any element, so
+  0.4.15 added a frame on those paths (T255 panel: Grok, Hy4, DeepSeek and GLM measured it). The warm figures (1,734 and
+  2,181) depend on what the warm-up optimised and do not reproduce elsewhere; only the cold, fresh-process figures
+  compare.
+
+### Known, not fixed here
+
+- The text after a tab widget reads as the last tab's content, and after a bare last heading as that tab's only content
+  (P2A-056, every version). A second tab bar naming the same panels under other labels has its labels written nowhere
+  (P2A-057, since 0.4.11).
+
 ## 0.4.15 - 2026-11-15
 
 ### Fixed
