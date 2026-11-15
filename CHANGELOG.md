@@ -2,6 +2,32 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.13 - 2026-11-15
+
+### Fixed
+
+- **The panels of a tab list the walk never reaches were lost (P2A-047).** A tab list in a hidden block (the `hidden`
+  attribute or `display:none` on the list or on a wrapper) still claimed its panels, so they were skipped where they
+  stand and never written: a page whose tab list stays hidden until a script runs lost every visible panel. Such panels
+  are now written where they stand, without the hidden tab labels (the page is walked a second time, only when a group
+  wrote nothing). Every version with tab groups had it.
+- **Nested tab lists whose tabs name no panel each collected every tab inside them (P2A-046).** 0.4.12 skipped a nested
+  list only inside a list that formed a group, so lists whose tabs name no panel still cost k × n: 500 lists around
+  20,000 tabs took 7.9 s. A list inside any list is now skipped (the outer one holds every tab below it), and a tab's
+  label is read only once its `aria-controls` names a panel: 2.1 s, what the same buttons cost in 500 nested `<div>`s
+  (each button climbs its ancestors, a cost of depth tracked as P2A-033).
+- **`aria-selected` is read as Chrome reads it (P2A-049):** trimmed and case-insensitive; `false` is not selected, an
+  empty value and `undefined` are no state, and any other value is selected (Chrome 157, measured through its
+  accessibility tree). `True` from a template put a shared panel under the wrong tab and dropped a selected tab's label.
+
+### Changed
+
+- **A repeated id in `aria-labelledby` is read each time**, as accname 1.2 (step 2B) and Chrome 157 read it: `x x x`
+  names a panel «Save Save Save»; 0.4.11 read it once. The bound stays: a label's text is computed once, and the heading
+  stops past 300 characters. No saved page repeats an id.
+- On 1,065 saved pages the output is byte-identical to 0.4.12 (20 s against 19 s in all): the
+  new paths are reached only by the shapes in `tests/node/tab-refs.test.ts`.
+
 ## 0.4.12 - 2026-11-15
 
 ### Fixed
