@@ -77,7 +77,9 @@ interface RenderOpts {
 // of walking normally.
 interface TabGroup {
   container: Element;
-  panels: Array<{ label: string; el: Element }>;
+  // `content` is false for a tab whose panel another tab of the same list also names: the panel is written once, under
+  // the selected one of them, else the first (P2A-042).
+  panels: Array<{ label: string; el: Element; content: boolean }>;
 }
 
 // #9: the synthetic title heading duplicates the page's own <h1> on most well-formed
@@ -397,6 +399,19 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
   return container;
 };
 
+// A tab heading keeps at most this many characters of its label. A label is written once per tab or panel that names
+// it, so an unbounded one let a page multiply its own text: 6,000 panels naming one 12,000-character label wrote 72M
+// characters, and one aria-labelledby naming a label 4,000 times a 48M-character heading (P2A-042). The longest tab
+// heading on 1,065 saved pages is 189 characters (bun.html: a tab button holding a title, a command and a sentence).
+const TAB_LABEL_MAX = 300;
+const clipLabel = (s: string): string => {
+  if (s.length <= TAB_LABEL_MAX) return s;
+  let end = TAB_LABEL_MAX;
+  const c = s.charCodeAt(end - 1);
+  if (c >= 0xd800 && c <= 0xdbff) end -= 1; // never split a surrogate pair
+  return `${s.slice(0, end).trimEnd()}…`;
+};
+
 // Static tab discovery: aria-controls chains, role="tablist" siblings, and
 // data-state attribute pairs. Emits '## Tab: {label}' sections. Does NOT
 // click — for Node we treat each panel as ALREADY present in the DOM.
@@ -404,22 +419,23 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
   const groups: TabGroup[] = [];
   const seenContainers = new WeakSet<Element>();
   // The text of each labelling element, computed once: n panels naming one large label read it n times, and 6,000 of
-  // them took 21 s in 0.4.9 (P2A-041).
+  // them took 21 s in 0.4.9 (P2A-041). Kept with its whitespace collapsed and clipped, so joining it into a heading
+  // costs no more than the heading keeps.
   const labelTexts = new Map<Element, string>();
   const labelText = (e: Element | null): string => {
     if (!e) return '';
     let t = labelTexts.get(e);
-    if (t === undefined) labelTexts.set(e, (t = nameText(e, opts)));
+    if (t === undefined) labelTexts.set(e, (t = clipLabel(nameText(e, opts).replace(/\s+/g, ' ').trim())));
     return t;
   };
   // Path 1: [role="tablist"] with aria-controls chain
   root.querySelectorAll('[role="tablist"]').forEach((tl) => {
     if (seenContainers.has(tl)) return;
     const tabs = [...tl.querySelectorAll('[role="tab"], button')];
-    const panels: Array<{ label: string; el: Element }> = [];
+    const found: Array<{ label: string; el: Element; selected: boolean }> = [];
     for (const tab of tabs) {
       // A tab's label is its name, without the text of hidden elements (T124 panel: `One<span hidden>x</span>` read Onex).
-      const label = cleanInline(nameText(tab, opts));
+      const label = clipLabel(cleanInline(nameText(tab, opts)));
       if (!label) continue;
       const controls = tab.getAttribute('aria-controls');
       if (!controls) continue;
@@ -429,9 +445,19 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       // A panel outside the content root is not part of it: a hidden block anywhere on the page was one aria-controls
       // away from being printed (T124 panel: ocmimo).
       if (!panel || !root.contains(panel)) continue;
-      panels.push({ label, el: panel });
+      found.push({ label, el: panel, selected: tab.getAttribute('aria-selected') === 'true' });
     }
-    if (panels.length >= 2) {
+    if (found.length >= 2) {
+      // Tabs that name one panel each keep their heading, and the panel is written once, under the selected one of them,
+      // else the first: the page holds what that tab shows. 0.4.10 wrote it under every tab, so n tabs naming one panel
+      // wrote it n times (500 tabs and a 115 KB panel: 26 s, 6M characters, P2A-042); on bun.html five tour steps
+      // naming one terminal printed the first step's output five times.
+      const owner = new Map<Element, number>();
+      found.forEach((f, i) => {
+        const o = owner.get(f.el);
+        if (o === undefined || (f.selected && !found[o].selected)) owner.set(f.el, i);
+      });
+      const panels = found.map((f, i) => ({ label: f.label, el: f.el, content: owner.get(f.el) === i }));
       groups.push({ container: tl, panels });
       seenContainers.add(tl);
     }
@@ -450,24 +476,31 @@ const discoverTabGroups = (root: Element, opts: RenderOpts): TabGroup[] => {
       // labelling element's text instead of emitting the raw id as a heading.
       const labelledBy = p.getAttribute('aria-labelledby') || '';
       const doc = p.ownerDocument;
-      const labelledText = labelledBy && doc
-        ? labelledBy
-            .split(/\s+/)
-            // A space before or after the ids made an empty token, and linkedom's getElementById('') answers <html>:
-            // the panel was named with the whole page's text (P2A-040). HTML's token lists have no empty tokens.
-            .filter(Boolean)
-            .map((id) => labelText(elementById(doc, id)))
-            .join(' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : '';
+      let labelledText = '';
+      if (labelledBy && doc) {
+        const seen = new Set<string>();
+        for (const id of labelledBy.split(/\s+/)) {
+          // A space before or after the ids made an empty token, and linkedom's getElementById('') answers <html>:
+          // the panel was named with the whole page's text (P2A-040). HTML's token lists have no empty tokens.
+          // Each id is read once, and no more text than the heading keeps: one aria-labelledby naming a label 4,000
+          // times wrote it 4,000 times, 48M characters and 2.8 GB (P2A-042).
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          const t = labelText(elementById(doc, id));
+          if (t) labelledText = labelledText ? `${labelledText} ${t}` : t;
+          if (labelledText.length > TAB_LABEL_MAX) break;
+        }
+      }
       return {
-        label: labelledText ||
-               p.getAttribute('aria-label') ||
-               p.getAttribute('data-value') ||
-               p.id ||
-               'Panel',
+        label: clipLabel(
+          labelledText ||
+            p.getAttribute('aria-label') ||
+            p.getAttribute('data-value') ||
+            p.id ||
+            'Panel',
+        ),
         el: p,
+        content: true,
       };
     });
     groups.push({ container: parent, panels });
@@ -561,10 +594,18 @@ const renderNodeWithTabs = (
   // If THIS element is a tab-group container, render its panels as sections.
   const group = groupOf(tabGroups, el);
   if (group) {
-    for (const panel of group.panels) {
+    // A panel is written once per render (P2A-042). A tab whose panel another group wrote before this one started is
+    // left out with its heading: a second tab list naming the same panels (a desktop and a mobile bar) wrote each panel
+    // twice. The panel is marked before its walk, so a tab list inside a panel that names that panel no longer recurses
+    // until the stack overflows, which failed the whole page (P2A-043).
+    const before = group.panels.map((p) => printedPanels.has(p.el));
+    group.panels.forEach((panel, i) => {
+      if (before[i]) return;
       out.push('', `### Tab: ${escapeMd(panel.label)}`, '');
+      if (!panel.content || printedPanels.has(panel.el)) return;
+      printedPanels.add(panel.el);
       walkWithTabs(panel.el, out, opts, tabGroups, capturedPanelEls, dedupe);
-    }
+    });
     return;
   }
   renderNode(el, out, opts, tabGroups, capturedPanelEls, dedupe);
@@ -1007,6 +1048,8 @@ const resetButtonCaches = (): void => {
   preCountCache = new WeakMap();
   hasPreCache = new WeakMap();
   idIndexes = new WeakMap();
+  groupIndexes = new WeakMap();
+  printedPanels = new WeakSet();
 };
 const elementById = (doc: Document, id: string): Element | null => {
   // An empty IDREF names nothing, as in a browser (linkedom's getElementById('') answers the first element without an
@@ -1031,8 +1074,10 @@ const elementById = (doc: Document, id: string): Element | null => {
 };
 // The tab group whose container is el, the first one as tabGroups.find answered. The list was scanned for every element:
 // 48,000 tab groups took 9.7 s in 0.4.9 (P2A-041). Keyed by the list, which discoverTabGroups builds once per render
-// and nothing changes afterwards.
-const groupIndexes = new WeakMap<TabGroup[], Map<Element, TabGroup>>();
+// and nothing changes afterwards. Emptied with the other caches, though a WeakMap keyed by the list frees itself.
+let groupIndexes = new WeakMap<TabGroup[], Map<Element, TabGroup>>();
+// The tab panels already written in this render (P2A-042, P2A-043).
+let printedPanels = new WeakSet<Element>();
 const groupOf = (tabGroups: TabGroup[], el: Element): TabGroup | undefined => {
   if (!tabGroups.length) return undefined;
   let index = groupIndexes.get(tabGroups);

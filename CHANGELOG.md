@@ -2,6 +2,30 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.11 - 2026-11-15
+
+### Fixed
+
+- **A tab panel named by several tabs was written once per tab (P2A-042).** Each tab whose `aria-controls` names the
+  panel printed it again under its own heading: 200 tabs naming one panel of 2,000 words took 2.1 s and wrote 805,000
+  characters, 500 tabs and a 115 KB panel 26 s and 6M characters, and a second tab list naming the same panels (a
+  desktop and a mobile bar) wrote every panel twice. Every tab keeps its heading, and the panel is written once, under
+  the tab that is selected (`aria-selected="true"`), else the first that names it: the page holds what that tab
+  shows. On bun.html five tour steps name one terminal, and 0.4.10 printed the first step's output under all five. A
+  tab whose panel another tab list already wrote is left out with its heading.
+- **A tab label could be any length, and was written once per reference (P2A-042).** One `aria-labelledby` naming a
+  label 4,000 times wrote a 48M-character heading (2.8 GB of memory), and 6,000 panels naming one 12,000-character
+  label wrote 72M characters. A tab heading keeps at most 300 characters of its label, cut with `…` and never inside a
+  surrogate pair, and an id repeated in one `aria-labelledby` is read once. The longest tab heading on 1,065 saved
+  pages is 189 characters.
+- **A tab list inside a panel that names that panel failed the whole page (P2A-043).** Writing the panel reached its
+  tab list, which wrote the panel again, until `Maximum call stack size exceeded`: a page of a few hundred bytes came
+  back as «Page2AI extraction failed», its other text lost. A panel is marked as written before its content is walked.
+- Found by the review panel on 0.4.10 (P2A-042) and while measuring it (P2A-043). Nine new tests
+  (`tests/node/tab-refs.test.ts`); all nine fail on 0.4.10. On 1,065 saved pages the Markdown is byte-identical to
+  0.4.10 except bun.html, whose four repeated copies of the step-01 terminal are gone (1,120 characters), in both
+  option sets. The tab-group index is now emptied with the other per-render caches.
+
 ## 0.4.10 - 2026-11-14
 
 ### Fixed
