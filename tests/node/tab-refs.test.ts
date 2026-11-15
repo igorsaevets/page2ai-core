@@ -284,14 +284,35 @@ describe('a tab list inside a panel that names that panel (P2A-043)', () => {
 describe('nested tab lists whose tabs name no panel are collected once (P2A-046)', () => {
   // The same buttons at the same depth in plain <div>s are the control: what is left is the walk's own cost of depth
   // (each button climbs its ancestors, P2A-033), not tab discovery. 0.4.12: 1.5 s against 0.48 s; 0.4.13: 0.52 s.
+  // Both shapes run once first and then in turns, best of three: timed cold, the control ran first and slowest, which
+  // leaned the ratio toward a pass (T253 panel, seven channels).
+  const fastest = (bodies: string[]): Array<{ ms: number; markdown: string }> => {
+    bodies.forEach((b) => convert(b));
+    const best = bodies.map(() => ({ ms: Infinity, markdown: '' }));
+    for (let round = 0; round < 3; round++) {
+      bodies.forEach((b, i) => {
+        const r = timed(b);
+        if (r.ms < best[i].ms) best[i] = r;
+      });
+    }
+    return best;
+  };
   it('500 nested tab lists around 5,000 tabs that name no panel cost what 500 nested <div>s cost', () => {
     const tabs = Array.from({ length: 5_000 }, (_, i) => `<button role="tab"${i % 2 ? ' aria-controls="nowhere"' : ''}>t${i}</button>`).join('');
     const nest = (open: string): string => `<p>Before.</p>${open.repeat(500)}${tabs}${'</div>'.repeat(500)}<p>After.</p>`;
-    const divs = timed(nest('<div>'));
-    const lists = timed(nest('<div role="tablist">'));
+    const [divs, lists] = fastest([nest('<div>'), nest('<div role="tablist">')]);
     expect(lists.markdown).toBe(divs.markdown);
     expect(lists.ms).toBeLessThan(divs.ms * 2);
-  }, 120_000);
+  }, 240_000);
+
+  // Lists hanging off one chain of wrappers inside an outer list: 0.4.13 recorded only «no list above», so each of them
+  // climbed the chain again (4,000 lists, 199 KB: 312 ms against 42 ms once each climb is recorded, T254).
+  it('3,000 tab lists hanging off one chain inside an outer list cost what the same <div>s cost', () => {
+    const hang = (inner: string): string =>
+      `<div role="tablist">${`<div>${inner}<span>x</span></div>`.repeat(3_000)}${'</div>'.repeat(3_000)}</div>`;
+    const [divs, lists] = fastest([hang('<div>'), hang('<div role="tablist">')]);
+    expect(lists.ms).toBeLessThan(divs.ms * 2 + 20);
+  }, 240_000);
 });
 
 const twoPanels = '<div id="p1" role="tabpanel"><p>P1TEXT</p></div><div id="p2" role="tabpanel"><p>P2TEXT</p></div>';
@@ -311,6 +332,7 @@ describe('the panels of a tab list the walk never reaches are written where they
       expect(count(out, 'P2TEXT')).toBe(1);
       expect(out).not.toContain('HidOne');
       expect(out).not.toContain('HidTwo');
+      if (html.includes('code()')) expect(count(out, 'code()')).toBe(1);
     });
   }
   it('a visible list naming the same panels still writes them under its tabs', () => {
@@ -331,7 +353,8 @@ describe('aria-selected is read as Chrome reads it (P2A-049)', () => {
   const shared = (v: string): string =>
     '<div role="tablist"><button role="tab" aria-controls="s">First</button>' +
     `<button role="tab" aria-controls="s" aria-selected="${v}">Second</button></div><div id="s" role="tabpanel"><p>SHARED</p></div>`;
-  for (const v of ['True', 'TRUE', ' true ', '1']) {
+  // Chrome 157 does not trim: ` false ` and a lone space are selected (T254, 0.4.13 trimmed them to «not selected»).
+  for (const v of ['True', 'TRUE', ' true ', '1', ' false ', ' ']) {
     it(`aria-selected="${v}" puts a shared panel under that tab`, () => {
       expect(convert(shared(v))).toContain('### Tab: Second\n\nSHARED');
     });
@@ -343,6 +366,70 @@ describe('aria-selected is read as Chrome reads it (P2A-049)', () => {
   }
   it('a selected tab outside any group keeps its label whatever the case', () => {
     expect(convert('<p>Before.</p><div><button role="tab" aria-selected="True">LoneTabLabel</button></div><p>After.</p>')).toContain('LoneTabLabel');
+  });
+});
+
+describe('a tab widget inside a panel of an unreached tab list is written once (P2A-050)', () => {
+  // 0.4.13's second walk wrote the panels of a group it reached inside such a panel twice (by the group, then where they
+  // stand), and once more per level of nesting. Each text below was written 0 times by 0.4.12 and 2-5 times by 0.4.13.
+  const hidden = (a: string, b: string): string => `<div hidden>${tablist([[a, 'HidOne'], [b, 'HidTwo']])}</div>`;
+  const once = (out: string, texts: string[]): void => {
+    for (const t of texts) expect(count(out, t), t).toBe(1);
+    expect(out).not.toContain('HidOne');
+  };
+  it('code tabs in a panel of a hidden tab bar keep their headings, each panel once', () => {
+    const out = convert(
+      `${hidden('p', 'p2')}<div id="p"><p>PTEXT</p>${tablist([['q', 'Q1'], ['q2', 'Q2']])}` +
+        '<div id="q"><p>QTEXT</p></div><div id="q2"><p>QXTWO</p></div></div><div id="p2"><p>P2TEXT</p></div>',
+    );
+    expect(out).toContain('### Tab: Q1\n\nQTEXT');
+    expect(out).toContain('### Tab: Q2\n\nQXTWO');
+    once(out, ['PTEXT', 'QTEXT', 'QXTWO', 'P2TEXT']);
+  });
+  it('three levels: each text once (0.4.13 wrote the innermost three times)', () => {
+    const out = convert(
+      `${hidden('p', 'px')}<div id="p"><p>PTEXT</p>${tablist([['q', 'Q1'], ['qx', 'Q2']])}<div id="q"><p>QTEXT</p>` +
+        `${tablist([['r', 'R1'], ['rx', 'R2']])}<div id="r"><p>RTEXT</p></div><div id="rx"><p>RXTEXT</p></div></div>` +
+        '<div id="qx"><p>QXTEXT</p></div></div><div id="px"><p>PXTEXT</p></div>',
+    );
+    once(out, ['PTEXT', 'QTEXT', 'RTEXT', 'RXTEXT', 'QXTEXT', 'PXTEXT']);
+  });
+  it('a hidden list naming a visible tab list: that list writes its panels once', () => {
+    const out = convert(
+      `${hidden('vlist', 'p2')}<div id="vlist" role="tablist"><button role="tab" aria-controls="a">VA</button>` +
+        '<button role="tab" aria-controls="b">VB</button></div><div id="a" role="tabpanel"><p>ATEXT</p></div>' +
+        '<div id="b" role="tabpanel"><p>BTEXT</p></div><div id="p2" role="tabpanel"><p>P2TEXT</p></div>',
+    );
+    expect(out).toContain('### Tab: VA\n\nATEXT');
+    once(out, ['ATEXT', 'BTEXT', 'P2TEXT']);
+  });
+  it('the inner list after its own panels: each panel once', () => {
+    const out = convert(
+      `<div id="a" role="tabpanel"><p>ATEXT</p></div><div id="b" role="tabpanel"><p>BTEXT</p></div>${hidden('X', 'Y')}` +
+        `<div id="X"><p>XTEXT</p>${tablist([['a', 'IA'], ['b', 'IB']])}</div><div id="Y"><p>YTEXT</p></div>`,
+    );
+    once(out, ['ATEXT', 'BTEXT', 'XTEXT', 'YTEXT']);
+  });
+  it('a tab list inside the four nested panels it names: each level once (0.4.13: the innermost five times)', () => {
+    let html = tablist([0, 1, 2, 3].map((i) => [`L${i}`, `T${i}`] as [string, string]));
+    for (let i = 3; i >= 0; i--) html = `<div id="L${i}"><p>LVL${i}X</p>${html}</div>`;
+    const out = convert(html);
+    for (const t of ['LVL0X', 'LVL1X', 'LVL2X', 'LVL3X']) expect(count(out, t), t).toBe(1);
+  });
+  it('an inline panel written where it stands is not written again by a group reached later', () => {
+    const out = convert(
+      `${hidden('X', 's')}<p>Before <span id="s">SPANTEXT</span> after.</p>` +
+        `<div id="X"><p>XTEXT</p>${tablist([['s', 'S1'], ['t', 'T1']])}</div><div id="t"><p>TTEXT</p></div>`,
+    );
+    once(out, ['SPANTEXT', 'XTEXT', 'TTEXT']);
+  });
+  it('a panel skipped where it stands (aria-hidden) is still written by a group reached later', () => {
+    const out = convert(
+      `${hidden('X', 'h')}<div id="h" aria-hidden="true"><p>HTEXT</p></div>` +
+        `<div id="X"><p>XTEXT</p>${tablist([['h', 'H1'], ['k', 'K1']])}</div><div id="k"><p>KTEXT</p></div>`,
+    );
+    expect(out).toContain('### Tab: H1\n\nHTEXT');
+    once(out, ['HTEXT', 'XTEXT', 'KTEXT']);
   });
 });
 
