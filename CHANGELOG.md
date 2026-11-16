@@ -2,6 +2,38 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.18
+
+Fixes in the 0.4.17 depth cap, found by re-measuring the T259 review panel's claims (T260).
+
+- **Hidden text no longer shows past the cap.** 0.4.17 removed the tags of elements deeper than 200 levels and kept
+  their text, so text the renderer keeps out (the `hidden` attribute, inline `display:none` or `visibility:hidden`,
+  `<template>`, `<noscript>`, `<select>`, `<svg>`, a self-closed `<script/>`) was written into the Markdown once a page
+  wrapped it in 200 elements; 0.4.16 wrote none of it at any depth. Such an element is now removed past the cap
+  together with its content, by the text pass and by the tree bound. The hidden kinds the renderer does show (tab
+  panels, code in a hidden block, React segments, `until-found`) are dropped too past the cap.
+- `<script>`, `<style>`, `<title>` and `<textarea>` follow the depth rule like other elements (past the cap they go with
+  their text); only `<xmp>` stays at any depth. A `<textarea>` kept inside a removed element closed a `<select>` in the
+  output that the input still had open, and what followed it showed.
+- Where `/>` closes a kept element in one parse and not the other (a removed `<svg>` changed the output's foreign
+  context), the output now follows the input: an explicit end tag, or `>` for `/>` (not for raw-text names). On 5,000
+  seeded tag soups with a cap of 6, the text shown outside hiding elements is identical before and after the cap except
+  for 5 words in 4 soups (0.4.17: every hidden element past the cap).
+- Text joined across a removed tag no longer forms a character reference or a tag the page did not have:
+  `X&<b>amp;</b>Y` read `X&Y`, `Q&#6<b>5;</b>R` read `QAR`, and `a<<b>div>` read `a< div>`; an empty comment now
+  separates them. An end tag with spaces after `</` (`</ div>`) no longer leaves `<` or `</` in the text. `&#32;` before
+  a removed block no longer counts as text.
+- The tree bound (208 levels, after the React streaming replay) kept only text: blocks ran together (`W1 oneW2 two`),
+  and `<br>` and `<img>` were lost. It now writes a `<br>` where a block began or ended after text, keeps void elements,
+  and drops hidden content.
+- The text pass writes its output as it goes: 0.4.17 kept every cut in a list, about 570 MB for 9 MB of nested tags.
+- Corrections to the 0.4.17 notes: a page nested deeper than 200 levels loses its structure below 200 (links, headings,
+  tables), and pages between 201 and the old limits (Chrome's worker: nested tables 347 levels, blockquotes ~390; Node
+  ~800) converted whole on 0.4.16, so it is not only pages that failed. The depth counts `<html>` and `<body>`, and a
+  fragment is measured inside its shell. Past the cap, inline elements join as the browser shows their text
+  (`<span>a</span><span>b</span>` reads `ab`, without the space the renderer puts between two inline elements). The
+  pass costs about 6 ms per MB of prose and up to about 28 ms per MB of tag-dense markup.
+
 ## 0.4.17
 
 ### Fixed

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Parser } from 'htmlparser2';
 import { parseHTML } from 'linkedom';
 import { htmlToMarkdown } from '../../src/node/convert.js';
-import { capNesting, MAX_PARSE_DEPTH, nestingDepth } from '../../src/node/depth-cap.js';
+import { boundTreeDepth, capNesting, MAX_PARSE_DEPTH, nestingDepth } from '../../src/node/depth-cap.js';
 
 const VOID = new Set(['area', 'base', 'basefont', 'br', 'col', 'command', 'embed', 'frame', 'hr', 'img', 'input',
   'isindex', 'keygen', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
@@ -39,13 +39,32 @@ const treeDepth = (html: string): number => {
   return max;
 };
 
-// Text the parser emits, whitespace dropped (capNesting adds spaces and <br>, never letters).
-const parserText = (html: string): string => {
+// Text the parser emits outside every element that hides its content (a tag the renderer skips, `hidden`, inline
+// display:none or visibility:hidden), exactly, spaces included: capNesting adds <br> and empty comments, never text, and
+// drops only what such an element holds (T260: 0.4.17 showed hidden text past the cap and joined `&`+`amp;` into `&`).
+const SKIPPED = new Set(['script', 'style', 'noscript', 'template', 'svg', 'canvas', 'head', 'title', 'select',
+  'datalist', 'textarea', 'iframe', 'object', 'embed', 'audio', 'video']);
+const shownText = (html: string): string => {
   let s = '';
-  const p = new Parser({ ontext(t) { s += t; } }, { decodeEntities: true, xmlMode: false });
+  const hiding: boolean[] = [];
+  let hidden = 0;
+  const p = new Parser({
+    onopentag(name, attribs) {
+      const a = Object.fromEntries(Object.entries(attribs).map(([k, v]) => [k.toLowerCase(), v]));
+      const h = SKIPPED.has(name) || 'hidden' in a || /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(a.style || '');
+      hiding.push(h);
+      if (h) hidden++;
+    },
+    onclosetag() {
+      if (hiding.pop()) hidden--;
+    },
+    ontext(t) {
+      if (!hidden) s += t;
+    },
+  }, { lowerCaseAttributeNames: false, decodeEntities: true, xmlMode: false });
   p.write(html);
   p.end();
-  return s.replace(/\s+/g, '');
+  return s;
 };
 
 // Seeded tag soup over the parser's special cases: implied closes, optional end tags, svg/math and `/>`, raw text,
@@ -69,8 +88,8 @@ const soup = (seed: number, tokens: number): string => {
       const self = rnd(6) === 0 ? '/' : '';
       s += `<${rnd(5) === 0 ? name.toUpperCase() : name}${rnd(3) === 0 ? ' class="c"' : ''}${self}>`;
       if (RAW[name] && !self) s += `${RAW[name]}</${name}>`;
-    } else if (r < 8) s += `</${name}>`;
-    else s += ` w${i} `;
+    } else if (r < 8) s += `</${rnd(4) === 0 ? ' ' : ''}${name}>`;
+    else s += [` w${i} `, ` w${i} `, '&', '&am', 'p;', '<', '&#6', '5;', ' &#32;'][rnd(9)];
   }
   return s;
 };
@@ -106,12 +125,12 @@ describe('the cap', () => {
     expect(capNesting(nested(MAX_PARSE_DEPTH - 1))).not.toBe(nested(MAX_PARSE_DEPTH - 1));
   });
 
-  it('bounds the tree and keeps every word, on 400 seeded tag soups with a cap of 6', () => {
+  it('bounds the tree and keeps the shown text exactly, on 400 seeded tag soups with a cap of 6', () => {
     for (let seed = 1; seed <= 400; seed++) {
       const html = soup(seed, 150);
       const out = capNesting(html, 6);
       expect(treeDepth(out), html).toBeLessThanOrEqual(6 + 4);
-      expect(parserText(out), html).toBe(parserText(html));
+      expect(shownText(out), html).toBe(shownText(html));
     }
   });
 
@@ -160,5 +179,62 @@ describe('deep pages convert with their text (0.4.16: the «extraction failed» 
     const md = htmlToMarkdown(page(body)).markdown;
     expect(md).toContain('line599');
     expect(md).not.toMatch(/line\d+line\d+/);
+  });
+});
+
+describe('past the cap the page shows no more and no less than it did (T260, the T259 panel on 0.4.17)', () => {
+  const nest = (n: number, inner: string): string => '<div>'.repeat(n) + inner + '</div>'.repeat(n);
+  const page = (body: string): string =>
+    `<!DOCTYPE html><html><head><title>T</title></head><body><main><p>Start.</p>${body}<p>End.</p></main></body></html>`;
+  const md = (html: string): string => htmlToMarkdown(html, { includeFrontmatter: false }).markdown;
+
+  it('shows no hidden text (0.4.17 wrote all seven kinds below 200 levels)', () => {
+    const hid = '<div hidden><p>HID_ATTR</p></div><span style="display:none">HID_STYLE</span>' +
+      '<div style="visibility: hidden">HID_VIS</div><span style="display&#58;none">HID_ENT</span>' +
+      '<template><p>HID_TEMPLATE</p></template><noscript><p>HID_NOSCRIPT</p></noscript>' +
+      '<select><option>HID_OPTION</option></select><svg><text>HID_SVG</text></svg>' +
+      '<script/><p>HID_SCRIPT</p></script><p>SHOWN_AFTER</p>';
+    for (const n of [3, 205, 400, 5000]) {
+      const out = md(page(nest(n, hid)));
+      expect(out, String(n)).toContain('SHOWN_AFTER');
+      expect(out, String(n)).toContain('End.');
+      expect(out, String(n)).not.toMatch(/HID_/);
+    }
+  });
+
+  it('joins no text across a removed tag into a character reference, a tag or extra spaces', () => {
+    for (const inner of ['<p>X&<b>amp;</b>Y Z&lt<i>;</i>W Q&#6<b>5;</b>R</p>', '<p>a<<b>div>b</b> c</p>',
+      '<p>AAA<span>B</ span>CCC</  span>DDD</p>', '<p>T&#x00000<b>41;</b>U</p>']) {
+      const html = page(nest(258, inner));
+      expect(capNesting(html), inner).not.toBe(html);
+      expect(shownText(capNesting(html)), inner).toBe(shownText(html));
+    }
+  });
+
+  it('reads a space written as a reference as a space', () => {
+    expect(md(page(nest(258, '<div>A</div>&#32;<div>B</div>')))).toBe(md(page(nest(258, '<div>A</div> <div>B</div>'))));
+  });
+
+  it('keeps lines, images and hidden text apart when React segments stack past the tree bound', () => {
+    const k = 150;
+    const html = page(
+      nest(k, '<!--$?--><template id="B:0"></template><p>fallback0</p><!--/$-->') + '</main>' +
+      `<div hidden id="S:0">${nest(k, '<div>W1 one</div><div>W2 two</div><p>line a<br>line b</p>' +
+        '<img src="/deep.png" alt="DEEPIMG"><div hidden>HID_DEEP</div><select><option>HID_OPT</option></select>' +
+        '<!--$?--><template id="B:1"></template><p>fallback1</p><!--/$-->')}</div>` +
+      `<div hidden id="S:1">${nest(k, '<div>V1 one</div><div>V2 two</div>')}</div>` +
+      '<script>$RC("B:0","S:0")</script><script>$RC("B:1","S:1")</script><main>',
+    );
+    const out = md(html);
+    for (const w of ['W1 one', 'W2 two', 'line a', 'line b', 'V1 one', 'V2 two', 'DEEPIMG']) expect(out, w).toContain(w);
+    expect(out).not.toMatch(/oneW2|twoline|aline|bV1|oneV2|HID_|fallback/);
+  });
+
+  it('boundTreeDepth replaces what is too deep and leaves at most the bound', () => {
+    const doc = parseHTML(`<html><body>${nest(300, '<p>DEEP</p>')}</body></html>`).document as unknown as Document;
+    expect(boundTreeDepth(doc, 50)).toBeGreaterThan(0);
+    const html = (doc as unknown as { toString(): string }).toString();
+    expect(treeDepth(html)).toBeLessThanOrEqual(51);
+    expect(html).toContain('DEEP');
   });
 });
