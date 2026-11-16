@@ -84,8 +84,8 @@ describe('@page2ai/core/html, the network-free entry', () => {
     expect(root.htmlToMarkdown).toBe(htmlEntry.htmlToMarkdown);
   });
 
-  it('reaches linkedom and css.escape only: no undici, no node: module', () => {
-    expect([...bareImports('../../src/node/convert.ts')].sort()).toEqual(['css.escape', 'linkedom']);
+  it('reaches linkedom, its parser htmlparser2 and css.escape only: no undici, no node: module', () => {
+    expect([...bareImports('../../src/node/convert.ts')].sort()).toEqual(['css.escape', 'htmlparser2', 'linkedom']);
   });
 
   it('the same walk from the package root finds the fetch stack, so the walker is not blind', () => {

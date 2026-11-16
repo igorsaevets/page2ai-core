@@ -239,16 +239,18 @@ describe('a tab label is written with at most 300 characters (P2A-042)', () => {
 });
 
 describe('nested tab lists are collected once (P2A-044)', () => {
-  it('1,000 nested tab lists around 5,000 tabs: linear time (2.3 s and 413 MB on 0.4.11, 11.8 s at 548 KB)', () => {
-    const tabs = Array.from({ length: 5_000 }, (_, i) => `<button role="tab" aria-controls="${i % 2 ? 'nb' : 'na'}">t${i}</button>`);
+  // The cost was nesting × tabs. Since 0.4.17 nothing nests deeper than MAX_PARSE_DEPTH (200; the tabs of 1,000 nested
+  // lists past it are plain text), so the test keeps the product with 190 lists around 25,000 tabs.
+  it('190 nested tab lists around 25,000 tabs: linear time (0.4.11: 1,000 × 5,000 took 2.3 s and 413 MB)', () => {
+    const tabs = Array.from({ length: 25_000 }, (_, i) => `<button role="tab" aria-controls="${i % 2 ? 'nb' : 'na'}">t${i}</button>`);
     const { ms, markdown } = timed(
-      `${'<div role="tablist">'.repeat(1_000)}${tabs.join('')}${'</div>'.repeat(1_000)}` +
+      `${'<div role="tablist">'.repeat(190)}${tabs.join('')}${'</div>'.repeat(190)}` +
         '<div id="na" role="tabpanel">panel-a</div><div id="nb" role="tabpanel">panel-b</div>',
     );
     expect(count(markdown, 'panel-a')).toBe(1);
     expect(count(markdown, 'panel-b')).toBe(1);
-    expect(count(markdown, '### Tab: t')).toBe(5_000);
-    // 30-130 ms on 0.4.12, 2.3-3.2 s on 0.4.11: 1.5 s keeps a margin both ways on a slow CI runner (T252 panel).
+    expect(count(markdown, '### Tab: t')).toBe(25_000);
+    // 30-130 ms on 0.4.12 for 1,000 × 5,000, 2.3-3.2 s on 0.4.11: 1.5 s keeps a margin both ways (T252 panel).
     expect(ms).toBeLessThan(1_500);
   }, 120_000);
 
