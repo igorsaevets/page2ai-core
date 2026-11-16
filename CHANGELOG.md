@@ -2,6 +2,26 @@
 
 All notable changes to `@page2ai/core`.
 
+## Unreleased
+
+### Tests
+
+- The 0.4.16 frame test (P2A-055) counted every stack line that contained «renderNodeWithTabs», so a helper with that
+  name in its own hid its frame (T256 panel, Hy4: four frames, 13% less depth), and it built three of the chains through
+  which the walk goes one level deeper, so a frame added on a list item, a `<dl>` or a tab list that is itself a
+  second-walk panel passed too (GLM). T257 measured each of the four on a copy of the renderer. The test now counts
+  frames of `renderNodeWithTabs` only, in V8's own stack format, and builds a chain for each place where the walk
+  recurses (nine), each held to the frames it had on 0.4.16. It fails on 0.4.13, 0.4.14 and 0.4.15, and on five copies
+  of the renderer that each add one frame on one path.
+
+### Corrections to the 0.4.16 entry
+
+- 0.4.16 also fixed a tab list that is itself a panel of a hidden tab list: 0.4.13 / 0.4.15 / 0.4.16 convert 1,038 /
+  743 / 1,160 levels (0.4.15 seven frames a level, 0.4.16 four; T256 panel: DeepSeek, GLM, Hy4, AGY). The depth figures
+  of both entries are Node 24.21.0's: on Node 20 the same chains convert deeper (T256 panel, GLM: 878 plain `<div>`s),
+  so only figures from one Node version compare. The frame count does not fix a chain's depth: a chain of `<details>`
+  has the four frames of a chain of `<div>`s and converts 1,495 levels, and nested inline elements 1,872.
+
 ## 0.4.16 - 2026-11-15
 
 ### Fixed
