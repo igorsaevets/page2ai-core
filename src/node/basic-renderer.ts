@@ -16,7 +16,8 @@ import { endsWithLetteredColon, InlineText, lineBreakRunsToSpace } from './linea
 // HEAD/TITLE: the root can be documentElement (see usableBody). The form widgets and embeds hold
 // option lists and "your browser does not support" fallbacks, never page text; they used to stay
 // out only because the walk dropped all bare text (P2A-001), and must not arrive with the fix.
-const SKIP_TAGS = new Set([
+// The depth cap (depth-cap.ts) drops the content of these past its limit too, so it never shows what they hide.
+export const SKIP_TAGS = new Set([
   'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'HEAD', 'TITLE',
   'SELECT', 'DATALIST', 'TEXTAREA', 'IFRAME', 'OBJECT', 'EMBED', 'AUDIO', 'VIDEO',
 ]);
@@ -1291,7 +1292,7 @@ const isPanel = (n: Node | null, opts: RenderOpts): boolean => {
 // Inline CSS that makes an element invisible: display:none or visibility:hidden.
 // String-only check — no CSSOM, no getComputedStyle (the Node build has no layout engine).
 // Catches the common injection pattern: `<span style="display:none">prompt injection</span>`.
-const STYLE_HIDDEN_RE = /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i;
+export const STYLE_HIDDEN_RE = /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i;
 const isStyleHidden = (el: Element): boolean => STYLE_HIDDEN_RE.test(el.getAttribute('style') || '');
 
 // data: image URIs above this size are dropped: a real inline icon is a few KB; anything larger
