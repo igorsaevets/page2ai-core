@@ -2,7 +2,28 @@
 
 All notable changes to `@page2ai/core`.
 
-## Unreleased
+## 0.4.17
+
+### Fixed
+
+- **Deeply nested pages convert, with their text, in linear time (P2A-033, P2A-036).** A page nested past about 800
+  levels (about 390 in Chrome's Web Worker, where the online converter runs core: nested `<blockquote>`, `<figure>` or
+  hidden tab panels) became the «extraction failed» document, because the walks recurse per level; and the parse alone
+  cost the square of the depth (htmlparser2 10.1.0, linkedom's parser, keeps its stack at the front of an array:
+  100,000 nested `<div>` took 15 s, 100,000 nested tables 116 s, before any core code ran). A pass over the HTML text
+  now caps nesting at 200 levels BEFORE linkedom parses it (`src/node/depth-cap.ts`). It replays htmlparser2's own
+  Parser over its own Tokenizer (implied closes, void elements, `/>` in svg/math, raw text, stray `</p>` and `</br>`),
+  so it sees the stack the parse will build: on all 1,065 saved real pages its depth equals the parser's (deepest 42),
+  and a page no deeper than 200 comes back as the same string, so its Markdown is byte-identical. Deeper, the start
+  tag of every element that would open past the cap is removed with its end tag; its text stays, in the element at the
+  cap; a removed block tag becomes a line break when text came since the last one; `<br>`, `<img>` and raw-text
+  elements stay; a list or a table at the cap keeps one item, row and cell so its text is written. As in browsers
+  (whatwg/html#3732), the stack that matches end tags is unbounded and only the tree is capped. 18 shapes at 10,000
+  and 40,000 levels convert with their innermost text in time linear in the page; 100,000 nested `<div>` take about
+  50 ms. The pass costs about 6 ms per MB. After the parse, a second bound on the tree (208 levels) catches what the
+  text pass cannot see: the React streaming replay stacking a segment into another segment's boundary.
+- The P2A-044 test now nests 190 tab lists around 25,000 tabs (0.4.11: 2.8 s): 1,000 nested lists are past the cap,
+  where their tabs are plain text.
 
 ### Tests
 

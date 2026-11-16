@@ -21,6 +21,7 @@ import { parseHTML } from 'linkedom';
 import { LinkedomAdapter } from './linkedom-adapter.js';
 import { documentTitle, renderBasicMarkdown } from './basic-renderer.js';
 import { opensWithHeadOrBody } from './linear-text.js';
+import { boundTreeDepth, capNesting } from './depth-cap.js';
 import { CORE_VERSION } from '../shared/constants.js';
 import type { ProfileName } from '../shared/types.js';
 
@@ -211,8 +212,12 @@ const revealStreamedSegments = (doc: Document): Document => {
   return doc;
 };
 
+// Every parse goes through the depth cap first: deep nesting stalls linkedom's parser and overflows the walks
+// (depth-cap.ts; P2A-033, P2A-036).
+const parse = (source: string): Document => parseHTML(capNesting(source)).document as unknown as Document;
+
 const parseDocument = (source: string): Document => {
-  const first = parseHTML(source).document as unknown as Document;
+  const first = parse(source);
   if (first.documentElement?.tagName === 'HTML') return adoptAfterBody(first);
   const inner = source.replace(/^﻿/, '').replace(/^\s*<\?xml[^>]*>/i, '').replace(/^\s*<!doctype[^>]*>/i, '');
   // Only a fragment that STARTS with <head> or <body> brings its own; one met later is wrapped like any
@@ -222,7 +227,7 @@ const parseDocument = (source: string): Document => {
   const shell = opensWithHeadOrBody(inner)
     ? `<!DOCTYPE html><html>${inner}</html>`
     : `<!DOCTYPE html><html><head></head><body>${inner}</body></html>`;
-  return adoptAfterBody(parseHTML(shell).document as unknown as Document);
+  return adoptAfterBody(parse(shell));
 };
 
 export const htmlToMarkdown = (
@@ -232,6 +237,7 @@ export const htmlToMarkdown = (
   const injectedBase = opts.baseUrl ?? 'about:blank';
   try {
     const document = revealStreamedSegments(parseDocument(html));
+    boundTreeDepth(document);
     const adapter = new LinkedomAdapter(document, injectedBase);
     const title = documentTitle(document).trim();
     const markdown = renderBasicMarkdown(document, adapter, {
