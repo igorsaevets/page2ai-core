@@ -2,6 +2,34 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.21
+
+Found by the T279 review panel (P2A-076..080) and measured again before the fix (T280): each browser case was loaded
+in Chrome 158 with react-dom 19.3.1's own inline runtime and read once React's reveal had run. Every new test fails on
+0.4.20.
+
+- **Attribute names are fixed in one pass (P2A-076).** 0.4.20 removed every attribute of an element whose names needed
+  lowercasing and set them back, and linkedom walks an element's attribute list for each name: one element with 20,000
+  upper-case attributes took 0.9 s, 40,000 took 5.3 s (0.4.19 did the same for HTML elements; 0.4.20 added SVG ones).
+  Names are now renamed where they stand: 80,000 attributes take 0.26-0.38 s.
+- **No call finds an element inside `<noscript>`, `<iframe>`, `<noembed>`, `<noframes>` or `<xmp>` (P2A-077).** A
+  browser that runs scripts reads their content as text, so React's calls cannot reach a segment there; 0.4.20 moved a
+  segment out of a `<noscript>` into the page, text that Chrome never shows.
+- **A first move is not counted against the replay's budget (P2A-078).** Each node is moved for the first time at most
+  once, so only moving it again can repeat. 0.4.20 counted every child, so after a chain of fills had spent the budget a
+  fresh segment of more than 64 children (200 paragraphs, in the panel's case) kept its fallback where Chrome showed it.
+  0.4.20's note that no budget cuts legitimate fills short was wrong for that case. A chain that moves the same children
+  again and again still stops where the budget does: Chrome makes all of those moves, and the work grows with the square
+  of the chain, so there the replay keeps that chain's fallback.
+- **A segment that a call reached and did not reveal stays hidden (P2A-079).** After a reveal that throws in the browser
+  (a segment holding its own boundary), the later queued segments stay hidden in Chrome; 0.4.20 printed them, and also a
+  segment refused for cost next to its fallback. Segments that no replayed call names are still printed, as before.
+- **`$RC` marks whatever stands before the boundary's `<template>`; a call that throws ends its script (P2A-080).**
+  React's `$RC` sets `.data` on the previous sibling without checking it, so Chrome fills a boundary opened by `$!`, `&`,
+  another comment, an element or a space (the space then reads `$`); 0.4.20 required a `$?`/`$~` comment and kept the
+  fallback. With nothing before the template `$RC` throws, as does `$RS` on a missing segment or placeholder, and the
+  rest of that script does not run; 0.4.20 went on with it.
+
 ## 0.4.20
 
 Found by the T277 review panel (P2A-072..075). What a browser does was measured first (T279): each case was loaded in

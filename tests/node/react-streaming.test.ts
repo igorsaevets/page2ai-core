@@ -131,7 +131,7 @@ describe('BL-39: a streamed segment goes where the page\'s own script puts it', 
       page(BOUNDARY, '<section hidden id="S:0"><h1>Title</h1></section>' + RC), 'Loading...'],
     ['a visible element with a segment id is not moved',
       page(`<div id="S:0"><p>Visible</p></div>${BOUNDARY}`, RC), 'Visible\n\nLoading...'],
-    ['a segment holding its own boundary is dropped (Chrome detaches it, then the move throws)',
+    ['a segment holding its own boundary is dropped (Chrome detaches it; with the boundary its direct child the move never ends)',
       page('<p>A</p>', '<div hidden id="S:0"><!--$?--><template id="B:0"></template><!--/$--><p>x</p></div>' + RC), 'A'],
   ])('guard, markup React does not write: %s', (_label, html, expected) => {
     expect(md(html)).toBe(expected);
