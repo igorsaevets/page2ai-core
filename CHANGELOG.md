@@ -2,6 +2,36 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.20
+
+Found by the T277 review panel (P2A-072..075). What a browser does was measured first (T279): each case was loaded in
+Chrome 158 with react-dom 19.3.1's own inline runtime and read once React's reveal had run.
+
+- **The streaming replay works the way React's runtime does, and no budget cuts legitimate fills short (P2A-072).**
+  React's `$RC` only looks its two elements up as its script runs and queues the pair; the runtime reveals the queue
+  once the page is parsed, in call order, and each reveal removes every node from the boundary to its end comment (to
+  the end of the parent when there is none). The replay now runs the same way: every call in document order, `$RS` at
+  once, then the queued fills. A fill removes every node it scans, so the scans add up to the page, and 0.4.19's
+  budget (128 steps per element, counting comments and text too) no longer stops the replay: 40 fills whose fallbacks
+  hold 8,000 comments each all happen (0.4.19: 6 of 40), and a valid fill after 1,000 or 4,000 boundaries with no end
+  comment prints its content (0.4.19: the fallback). What can still repeat (the test that a segment does not hold its
+  own boundary, and children moved again through nested segments) counts against 4 steps per byte of the page; past
+  that a fill may spend 64 steps, and one that needs more keeps its fallback while the later fills go on.
+- **Crafted pages print what Chrome shows.** A boundary with no end comment takes every later sibling in its parent and
+  gets the content at the end (0.4.18 and 0.4.19 kept the fallback); a `$RC` script that a fill removes still counts,
+  because it ran when it was parsed (P2A-073: 0.4.19 skipped it); a segment that an earlier fill removed still fills its
+  own boundary; calls naming one segment id all get the first segment, which fills the first boundary while the others
+  lose their fallback (P2A-074: the lookup no longer copies the id's list per call either, so 40,000 such calls take
+  1.0 s instead of 2.8 s); a segment that holds its own boundary is dropped and no later fill is made (in Chrome the
+  move throws HierarchyRequestError, or never ends when the boundary is the segment's own child).
+- **Attribute names on SVG and MathML elements are lowercased too (P2A-075),** ASCII letters only, keeping the first of
+  two names that then match and restoring SVG's 58 camelCase names (`viewBox`...) and MathML's `definitionURL`, as
+  Chrome parses them: an uppercase `<svg ARIA-HIDDEN STYLE>` segment wrapper is found, and U+212A KELVIN SIGN no
+  longer becomes `k`.
+- Real pages are unchanged: all 1,065 saved pages (4 of them stream) and 8 live streaming pages (Next.js, Vercel,
+  Claude docs, Supabase, shadcn/ui, Turborepo, Cursor, Remix; fetched 2026-11-20) convert byte for byte as on 0.4.19.
+- README: the order of the replay; text under `aria-hidden="true"` past the depth cap stays (it is on screen).
+
 ## 0.4.19
 
 Found while re-measuring the T261 review panel's claims (T277).
