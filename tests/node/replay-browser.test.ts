@@ -16,7 +16,7 @@ const calls = (list: string[]): string => list.map((c) => `<script>${c}</script>
 const words = (s: string): string[] => s.match(/[A-Za-z0-9]+/g) || [];
 
 describe('P2A-072..075: the streaming replay shows what Chrome shows', () => {
-  it('P2A-072: fills whose fallbacks are padded with comments all happen (0.4.19 filled 6 of 40)', () => {
+  it('P2A-072: fills whose fallbacks are padded with comments all happen (0.4.19 stopped part way)', () => {
     let h = '<html><body><main>';
     for (let i = 0; i < 40; i++) h += `<!--$?--><template id="B:${hex(i)}"></template>${'<!---->'.repeat(4000)}<p>FB${i}</p><!--/$-->`;
     h += '</main>';

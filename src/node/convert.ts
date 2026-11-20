@@ -97,7 +97,6 @@ const adoptAfterBody = (doc: Document): Document => {
 const FILL_BOUNDARY = /\$R[CR]\("([^"\\]*B:[0-9a-f]+)","([^"\\]*S:[0-9a-f]+)"/;
 const FILL_PLACEHOLDER = /\$RS\("([^"\\]*S:[0-9a-f]+)","([^"\\]*P:[0-9a-f]+)"/;
 const STREAM_CALL = new RegExp(`(?<![^;])(?:${FILL_BOUNDARY.source}|${FILL_PLACEHOLDER.source})`, 'g');
-const BOUNDARY_PENDING = /^\$[?~]$/; // `$~` = queued by React 19.2's batched reveal
 const BOUNDARY_START = /^(?:\$[?~!]?|&)$/; // `&` = an <Activity> boundary
 const REACT_ID = /[BSP]:[0-9a-f]+$/;
 // The HTML standard's JavaScript MIME types ("JavaScript MIME type essence match", no parameters).
@@ -125,8 +124,23 @@ const JS_TYPE = /^((application|text)\/(x-)?(ecma|java)script|text\/(javascript1
 // script's <template>/<noscript> ancestor is looked for before anything moves, at most REPLAY_DEPTH levels up, so a
 // script deeper than that is not replayed (no saved page nests past 42). What can repeat is the containment test
 // (`holds`) and moving a segment's children (children moved into a boundary inside a later segment move again with it).
-// Those steps count against WORK_PER_BYTE per byte of the page; past that a call gets at most CALL_STEPS, and one that
-// needs more keeps its fallback while the later calls go on (0.4.19 stopped the whole replay there).
+// Those steps count against WORK_PER_BYTE per character of the page; past that a call gets at most CALL_STEPS, and one
+// that needs more keeps its fallback while the later calls go on (0.4.19 stopped the whole replay there).
+// P2A-078 (T280): a child's first move is not counted: each node is moved for the first time at most once, so those
+// moves add up to the page. 0.4.20 counted every child, so after a chain had spent the budget a fresh segment of more
+// than 64 children (an article of 200 paragraphs) kept its fallback; Chrome showed it. A chain that moves the same
+// children again and again still stops where the budget does (Chrome makes every move; that work grows with the
+// square of the chain), and a segment refused once is not walked again.
+// P2A-079 (T280): a segment that a call reached and did not reveal (refused for cost, or queued after a reveal that
+// threw) stays hidden, as in Chrome: it loses its React id, which the renderer otherwise prints as shown (the recovery
+// for segments no replayed call names). 0.4.20 printed them, with their fallback.
+// P2A-080 (T280): $RC sets `.data` on whatever stands before the boundary's <template> (a text node then reads `$`,
+// as Chrome shows it); with nothing there it throws, and so does $RS on a missing segment, a missing placeholder or a
+// placeholder inside its segment: the rest of that script does not run. 0.4.20 wanted a `$?`/`$~` comment there and
+// kept the fallback otherwise ($!, &, a space, an element), and went on with the script.
+// P2A-077 (T280): elements inside <noscript>, <iframe>, <noembed>, <noframes> or <xmp> do not exist in a browser that
+// runs scripts (their content is text), so no call finds them; linkedom parses them as elements, and 0.4.20 moved a
+// segment out of a <noscript>.
 const REPLAY_DEPTH = MAX_PARSE_DEPTH + 8; // = the tree bound (boundTreeDepth)
 const WORK_PER_BYTE = 4;
 const CALL_STEPS = 64;
@@ -177,19 +191,31 @@ interface StreamScan extends Work {
   ids: Map<string, Element[]>;
   first: Map<string, number>; // per id: its elements before this index are gone
   gone: WeakSet<Element>; // detached by the first pass: getElementById no longer finds them
+  moved: WeakSet<Node>; // placed by an earlier move: moving it again is work that can repeat
+  refused: WeakSet<Element>; // segments left hidden: never walked again
   budget: number;
 }
+const RAW_TEXT = 'noscript, iframe, noembed, noframes, xmp';
 const scanDocument = (doc: Document, bytes: number): StreamScan => {
   const order = new Map<Element, number>();
   const ids = new Map<string, Element[]>();
+  const inert = new WeakSet<Element>();
+  for (const box of doc.querySelectorAll(RAW_TEXT)) {
+    if (inert.has(box)) continue; // its outer box marked it already
+    for (const el of box.querySelectorAll('*')) inert.add(el);
+  }
   for (const el of doc.querySelectorAll('*')) {
+    if (inert.has(el)) continue;
     order.set(el, order.size);
     if (!el.id || !REACT_ID.test(el.id)) continue;
     const list = ids.get(el.id);
     if (list) list.push(el);
     else ids.set(el.id, [el]);
   }
-  return { order, ids, first: new Map(), gone: new WeakSet(), steps: 0, budget: WORK_PER_BYTE * bytes + 65536 };
+  return {
+    order, ids, first: new Map(), gone: new WeakSet(), moved: new WeakSet(), refused: new WeakSet(), steps: 0,
+    budget: WORK_PER_BYTE * bytes + 65536,
+  };
 };
 
 // Every element of `node` (itself included) is out of the document for the rest of the first pass, which never puts
@@ -226,11 +252,21 @@ const holds = (scan: StreamScan, segment: Node, node: Node, limit: number): bool
   return undefined;
 };
 
-// How many children `node` has, when that is at most `limit`; undefined when it has more.
-const childCount = (node: Node, limit: number): number | undefined => {
-  let count = 0;
-  for (let c = node.firstChild; c; c = c.nextSibling) if (++count > limit) return undefined;
-  return count;
+// How many of the segment's children an earlier move placed, when that is at most `limit`; undefined when more.
+const moveCost = (scan: StreamScan, segment: Node, limit: number): number | undefined => {
+  let again = 0;
+  for (let c = segment.firstChild; c; c = c.nextSibling) if (scan.moved.has(c) && ++again > limit) return undefined;
+  return again;
+};
+const moveChildren = (scan: StreamScan, segment: Node, parent: Node, before: Node | null): void => {
+  for (let c = segment.firstChild; c; c = segment.firstChild) {
+    scan.moved.add(c);
+    parent.insertBefore(c, before);
+  }
+};
+const keepHidden = (scan: StreamScan, segment: Element): void => {
+  scan.refused.add(segment);
+  segment.removeAttribute('id');
 };
 
 // getElementById as the script sees it when it runs: the first element with that id still in the document, if the
@@ -246,50 +282,61 @@ const lookup = (scan: StreamScan, id: string, script: Element): Element | null =
 };
 
 // $RC and $RR as their script runs: both elements looked up, the pair queued.
-const queueBoundary = (scan: StreamScan, script: Element, boundaryId: string, segmentId: string, queue: Element[]): void => {
+// Each returns true when the call throws in the browser, so that the rest of its script does not run.
+const queueBoundary = (scan: StreamScan, script: Element, boundaryId: string, segmentId: string, queue: Element[]): boolean => {
   const segment = lookup(scan, segmentId, script);
-  if (!isSegment(segment)) return;
+  if (!isSegment(segment) || scan.refused.has(segment)) return false;
   const marker = lookup(scan, boundaryId, script);
   if (!marker) {
     segment.remove(); // React's $RC drops a segment whose boundary is gone: the browser never shows it
     forget(scan, segment);
-    return;
+    return false;
   }
+  if (marker.tagName !== 'TEMPLATE') return false;
   const open = marker.previousSibling;
-  if (marker.tagName !== 'TEMPLATE' || open?.nodeType !== 8 || !BOUNDARY_PENDING.test((open as Comment).data)) return;
-  (open as Comment).data = '$~';
+  if (!open) return true; // `previousSibling.data = "$~"` on null
+  if (open.nodeType === 8 || open.nodeType === 3) (open as CharacterData).data = '$~';
   queue.push(marker, segment);
+  return false;
 };
 
 // $RS, at once: the segment's children go where its placeholder stands.
-const fillPlaceholder = (scan: StreamScan, script: Element, segmentId: string, placeholderId: string): void => {
+const fillPlaceholder = (scan: StreamScan, script: Element, segmentId: string, placeholderId: string): boolean => {
   const segment = lookup(scan, segmentId, script);
-  if (!isSegment(segment)) return;
+  if (!segment) return true; // `a.parentNode` of null
+  if (!isSegment(segment) || scan.refused.has(segment)) return false;
   const placeholder = lookup(scan, placeholderId, script);
   if (!placeholder) {
     segment.remove(); // React's $RS removes the segment, then fails on the missing placeholder
     forget(scan, segment);
-    return;
+    return true;
   }
   const parent = placeholder.parentNode;
-  if (placeholder.tagName !== 'TEMPLATE' || !parent) return;
+  if (placeholder.tagName !== 'TEMPLATE' || !parent) return false;
   const limit = allowance(scan);
   const start = scan.steps;
   const inside = holds(scan, segment, placeholder, limit);
-  if (inside === undefined) return; // too costly to tell: the segment stays where it stands
+  if (inside === undefined) {
+    keepHidden(scan, segment); // too costly to tell
+    return false;
+  }
   if (inside) {
     segment.remove(); // React detaches it, then its move throws (or never ends)
     forget(scan, segment);
-    return;
+    return true;
   }
-  const count = childCount(segment, limit - (scan.steps - start));
-  if (count === undefined) return;
+  const again = moveCost(scan, segment, limit - (scan.steps - start));
+  if (again === undefined) {
+    keepHidden(scan, segment);
+    return false;
+  }
   segment.remove();
-  scan.steps += count;
-  while (segment.firstChild) parent.insertBefore(segment.firstChild, placeholder);
+  scan.steps += again;
+  moveChildren(scan, segment, parent, placeholder);
   forget(scan, segment);
   placeholder.remove();
   forget(scan, placeholder);
+  return false;
 };
 
 // $RV: the queued pairs revealed in call order, once the page is parsed.
@@ -297,16 +344,24 @@ const reveal = (scan: StreamScan, queue: Element[]): void => {
   for (let i = 0; i < queue.length; i += 2) {
     const marker = queue[i];
     const segment = queue[i + 1];
+    if (scan.refused.has(segment)) continue;
     const limit = allowance(scan);
     const start = scan.steps;
     const inside = holds(scan, segment, marker, limit);
-    if (inside === undefined) continue; // too costly to tell: this pair keeps its fallback, the later ones go on
+    if (inside === undefined) {
+      keepHidden(scan, segment); // too costly to tell: this pair keeps its fallback, the later ones go on
+      continue;
+    }
     if (inside) {
       segment.parentNode?.removeChild(segment); // React detaches it, then its move throws: no later pair is revealed
+      for (let j = i + 3; j < queue.length; j += 2) keepHidden(scan, queue[j]);
       return;
     }
-    const count = childCount(segment, limit - (scan.steps - start));
-    if (count === undefined) continue;
+    const again = moveCost(scan, segment, limit - (scan.steps - start));
+    if (again === undefined) {
+      keepHidden(scan, segment);
+      continue;
+    }
     segment.parentNode?.removeChild(segment);
     const parent = marker.parentNode;
     if (!parent) continue; // an earlier reveal removed the boundary: its segment is lost with it
@@ -324,9 +379,9 @@ const reveal = (scan: StreamScan, queue: Element[]): void => {
       parent.removeChild(end);
       end = next;
     }
-    scan.steps += count;
-    while (segment.firstChild) parent.insertBefore(segment.firstChild, end);
-    if (open?.nodeType === 8) (open as Comment).data = '$';
+    scan.steps += again;
+    moveChildren(scan, segment, parent, end);
+    if (open && (open.nodeType === 8 || open.nodeType === 3)) (open as CharacterData).data = '$';
   }
 };
 
@@ -343,8 +398,8 @@ const revealStreamedSegments = (doc: Document, bytes: number): Document => {
   for (const [script, text] of runs) {
     for (const m of text.matchAll(STREAM_CALL)) {
       scan ??= scanDocument(doc, bytes);
-      if (m[1]) queueBoundary(scan, script, m[1], m[2], queue);
-      else fillPlaceholder(scan, script, m[3], m[4]);
+      const threw = m[1] ? queueBoundary(scan, script, m[1], m[2], queue) : fillPlaceholder(scan, script, m[3], m[4]);
+      if (threw) break;
     }
   }
   if (scan) reveal(scan, queue);
@@ -385,7 +440,26 @@ const lowerAttributeNames = (doc: Document): void => {
     let change = false;
     for (let i = 0; i < attrs.length && !change; i++) change = attributeName(el, svg, attrs[i].name) !== attrs[i].name;
     if (!change) continue;
-    const all = [...attrs].map((a): [string, string] => [a.name, a.value]);
+    // P2A-076 (T280): renamed where they stand, one step each. Removing every name and setting it back walked the
+    // element's attribute list per name (linkedom keeps them in a list): 20,000 attributes took 0.9 s, quadratic.
+    const nodes = [...attrs];
+    if (nodes.every((a) => Object.getOwnPropertyDescriptor(a, 'name')?.writable === true)) {
+      const seen = new Set<string>();
+      const later: Attr[] = [];
+      for (const attr of nodes) {
+        const name = attributeName(el, svg, attr.name);
+        if (seen.has(name)) later.push(attr);
+        else {
+          seen.add(name);
+          (attr as { name: string }).name = name;
+        }
+      }
+      // The browser keeps the first of two names that now match, and so does getAttribute; each removal walks the
+      // list from its start, so past 64 of them the later ones stay, under the names they had.
+      if (later.length <= 64) for (const attr of later) el.removeAttributeNode(attr);
+      continue;
+    }
+    const all = nodes.map((a): [string, string] => [a.name, a.value]);
     const kept = new Map<string, string>();
     for (const [name, value] of all) {
       const adjusted = attributeName(el, svg, name);
