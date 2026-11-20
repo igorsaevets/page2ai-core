@@ -39,17 +39,22 @@ describe('P2A-061: a chain of streaming fills is replayed in linear time', () =>
     expect(ms).toBeLessThan(4000); // 0.4.18: about 11 s on the machine that measured 0.6 s for this
   }, 120000);
 
-  it('a segment that holds its own boundary stays where it stands, wherever in it the boundary sits', () => {
+  // T279: Chrome 158 with react-dom 19.3.1's runtime detaches such a segment, then the move throws (depth >= 1) or
+  // never ends (depth 0, the tab hangs); either way its text is never shown. 0.4.18 and 0.4.19 printed it.
+  it('a segment that holds its own boundary is dropped, wherever in it the boundary sits', () => {
     for (const depth of [0, 1, 40]) {
       const inner = `${'<div>'.repeat(depth)}<p>OWNTEXT</p><!--$?--><template id="B:0"></template><!--/$-->${'</div>'.repeat(depth)}`;
       const html = `<html><body><p>Before</p><div hidden id="S:0">${inner}</div><script>$RC("B:0","S:0")</script></body></html>`;
       const out = md(html);
-      expect(out.match(/OWNTEXT/g)?.length, `depth ${depth}`).toBe(1);
-      expect(out.indexOf('Before')).toBeLessThan(out.indexOf('OWNTEXT'));
+      expect(out, `depth ${depth}`).not.toContain('OWNTEXT');
+      expect(out, `depth ${depth}`).toContain('Before');
     }
   });
 
-  it('a boundary that an earlier fill removed is not found again; the next element with its id is', () => {
+  // T279: a call looks its elements up as its script runs, before any reveal (Chrome 158): the first B:1 is the one
+  // inside B:0's fallback, which B:0's reveal then removes, so SECOND is lost and "Wait" stays. 0.4.18 and 0.4.19
+  // looked up after the earlier fill and put SECOND into the second B:1.
+  it('a call gets the element its id names when its script runs, even one that an earlier reveal removes', () => {
     const html = '<html><body><main><p>A</p>' +
       '<!--$?--><template id="B:0"></template><p>Fallback</p><!--$?--><template id="B:1"></template><!--/$--><!--/$-->' +
       '<p>B</p><!--$?--><template id="B:1"></template><p>Wait</p><!--/$--><p>C</p></main>' +
@@ -57,8 +62,8 @@ describe('P2A-061: a chain of streaming fills is replayed in linear time', () =>
       '<div hidden id="S:1"><p>SECOND</p></div><script>$RC("B:1","S:1")</script></body></html>';
     const out = md(html);
     expect(out).not.toContain('Fallback');
-    expect(out).not.toContain('Wait');
-    const order = ['A', 'FIRST', 'B', 'SECOND', 'C'].map((w) => out.indexOf(w));
+    expect(out).not.toContain('SECOND');
+    const order = ['A', 'FIRST', 'B', 'Wait', 'C'].map((w) => out.indexOf(w));
     expect(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]))).toBe(true);
   });
 });

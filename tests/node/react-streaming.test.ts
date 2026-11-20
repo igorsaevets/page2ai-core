@@ -124,13 +124,14 @@ describe('BL-39: a streamed segment goes where the page\'s own script puts it', 
   it.each([
     ['a template with no pending comment before it is no boundary',
       page('<template id="B:0"></template><p>Loading...</p><!--/$-->', LATE + RC), 'Loading...'],
-    ['a boundary with no closing comment removes nothing',
-      page('<!--$?--><template id="B:0"></template><p>Loading...</p>', LATE + RC), 'Loading...'],
+    // T279: React's reveal (Chrome 158, react-dom 19.3.1) removes every later sibling and appends the content.
+    ['a boundary with no closing comment takes every later sibling, as the reveal does',
+      page('<!--$?--><template id="B:0"></template><p>Loading...</p><p>After</p>', LATE + RC), '# Title\n\nBody'],
     ['a hidden element that is not one of React\'s segment wrappers is not moved',
       page(BOUNDARY, '<section hidden id="S:0"><h1>Title</h1></section>' + RC), 'Loading...'],
     ['a visible element with a segment id is not moved',
       page(`<div id="S:0"><p>Visible</p></div>${BOUNDARY}`, RC), 'Visible\n\nLoading...'],
-    ['a segment holding its own boundary is left alone',
+    ['a segment holding its own boundary is dropped (Chrome detaches it, then the move throws)',
       page('<p>A</p>', '<div hidden id="S:0"><!--$?--><template id="B:0"></template><!--/$--><p>x</p></div>' + RC), 'A'],
   ])('guard, markup React does not write: %s', (_label, html, expected) => {
     expect(md(html)).toBe(expected);
