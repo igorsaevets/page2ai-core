@@ -2,6 +2,36 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.19
+
+Found while re-measuring the T261 review panel's claims (T277).
+
+- **A chain of streaming fills no longer takes a minute (P2A-061).** The React streaming replay looked each element up
+  with linkedom's `isConnected` and refused a segment that holds its own boundary with `contains`; both walk to the
+  root, once per call. A page whose fills chain (each segment holds a few nested elements around the next boundary)
+  therefore cost the square of its length in every version with the replay: 16,000 fills (4.6 MB) took 64 s, 4,000
+  fills 190 levels apart (8.9 MB) 51 s. An element the replay detaches is now remembered, so a lookup needs no walk,
+  and the containment test walks up from the boundary and through the segment in step, so it costs the shorter walk:
+  1.0 s and 1.8 s, the same Markdown. A script whose `<template>`/`<noscript>` ancestor, or a segment row whose table,
+  would lie more than 208 levels up is not replayed, and the replay stops once its steps pass 128 per element of the
+  page; the segments not moved by then stay where they stand, as on a page whose scripts did not run. No saved page
+  comes near either limit: all 1,065 convert as on 0.4.18 except the six below.
+- **Attribute names are read whatever their case (P2A-071).** linkedom keeps attribute names as the page wrote them and
+  compares them exactly, so `<div HIDDEN>`, `<p STYLE="display:none">` and `<div Aria-Hidden="true">` were printed at
+  every depth in every version (a browser hides the first two), `<a HREF>` and `<img SRC ALT>` lost their link, image
+  and alt text, and React's `colSpan`/`rowSpan` were ignored. Names on HTML elements are now lowercased after parsing,
+  the first of two that differ only in case kept, as a browser parses HTML (SVG keeps `viewBox` and the like). Six of
+  1,065 saved pages change: five gain link targets or image names that were lost, and a pricing table's header lines up
+  with its columns again.
+- A test checks that core and linkedom resolve one copy of htmlparser2, version 10.1.0: the depth cap replays that
+  version's stack rules, and a second copy or another major would make the two disagree without an error.
+- README: past the depth cap every hidden kind is left out, with `includeHidden` or without; an inline `display:none` or
+  `visibility:hidden` hides, a style sheet is not read.
+
+Known and open: past the cap, a stray `</desc>` or `</svg>` inside a removed element can leave the rest of the page in
+another parse context, so a few words that the same markup hides at depth 3 still show (P2A-062; two minimal repros
+from the T261 panel). Text under `aria-hidden` shows past the cap, as in 0.4.17 and 0.4.18.
+
 ## 0.4.18
 
 Fixes in the 0.4.17 depth cap, found by re-measuring the T259 review panel's claims (T260).
