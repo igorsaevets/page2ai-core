@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "css.escape": "^1.5.1",
-    "htmlparser2": "^10.1.0",
+    "htmlparser2": "^12.0.0",
     "linkedom": "^0.18.11",
     "undici": "^7.30.1"
   },
