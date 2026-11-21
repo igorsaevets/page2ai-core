@@ -2,6 +2,26 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.22
+
+P2A-081 (filed by the T279 review panel) and what measuring it found (T285). Each browser case was loaded in Chrome 158
+with React's own runtimes; every new test fails on 0.4.21.
+
+- **A React streaming segment that no call reveals is no longer printed (P2A-081).** The renderer printed a hidden
+  element with a React segment id (`<div hidden id="S:0">`, a `<table hidden>` segment) as shown: a recovery from before
+  the streaming replay, for pages whose calls cannot be replayed. Chrome never shows such a segment, so any page could
+  put text there that no reader sees and an AI reads. On the 1,065 saved pages and 35 live Next.js, Mintlify and Remix
+  pages (12 of them stream: 29 segments, each revealed by a call) the output is the same without the recovery.
+- **A `<main>` inside such a segment is no longer the root (P2A-082).** With no other `<main>` on the page, 0.4.21
+  took that one and printed only the hidden text: the visible page was dropped.
+- **React's external runtime is replayed.** With `unstable_externalRuntimeSrc` (in Next.js the App Router flag that a
+  canary took on 2026-11-02, vercel/next.js#97570, for a Content-Security-Policy without `unsafe-inline`) React sends
+  the calls as `<template data-rci>`, `data-rri` and `data-rsi`; they now run in document order as its script runs
+  them, and `data-rxi` keeps the fallback. On the page react-dom's own renderer writes, 0.4.21 printed the fallbacks
+  ("Loading") and lost the late section and table row, which arrive outside `<main>`; 0.4.22 gives Chrome's text. Two
+  shapes React never writes differ from Chrome: templates with no runtime script are replayed (as inline calls are),
+  and a template placed before its segment keeps the fallback.
+
 ## 0.4.21
 
 Found by the T279 review panel (P2A-076..080) and measured again before the fix (T280): each browser case was loaded

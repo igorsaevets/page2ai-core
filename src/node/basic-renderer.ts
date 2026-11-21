@@ -367,17 +367,17 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
   // The semantic container first. <main> is unique per document by spec, so unlike <article>
   // it cannot be a component. Unique among the SHOWN ones: a page may hold several <main> elements as long as all but
   // one are hidden (HTML, "the main element"), and a hidden one became the root and printed its whole text (C7c, codex).
-  // So a <main> under no `hidden` at all comes first, one inside a React streaming segment only when there is none, and
-  // one under a hidden tab panel or `until-found` section never: those are shown as one part of the page, so as the
-  // root they printed only themselves and dropped the visible <main> (T124 panel: codex, grok, mimo, spark, agy).
-  const clearUp = (e: Element, exempt: (a: Element) => boolean): boolean => {
-    for (let a: Element | null = e; a; a = a.parentElement) if (underHiddenAttr(a, opts) && !exempt(a)) return false;
+  // So only a <main> under no `hidden` at all: one under a hidden tab panel or `until-found` section is shown as one part
+  // of the page, so as the root it printed only itself and dropped the visible <main> (T124 panel: codex, grok, mimo,
+  // spark, agy). One inside a React streaming segment was taken when no other stood until 0.4.22: the replay has moved
+  // every segment a browser reveals by then, and a <main> left in a hidden segment replaced the visible page with text
+  // Chrome never shows (P2A-082, T285).
+  const clearUp = (e: Element): boolean => {
+    for (let a: Element | null = e; a; a = a.parentElement) if (underHiddenAttr(a, opts)) return false;
     return true;
   };
-  const pick = (selector: string): Element | undefined => {
-    const all = [...doc.querySelectorAll(selector)] as unknown as Element[];
-    return all.find((e) => clearUp(e, () => false)) || all.find((e) => clearUp(e, isReactSegment));
-  };
+  const pick = (selector: string): Element | undefined =>
+    ([...doc.querySelectorAll(selector)] as unknown as Element[]).find(clearUp);
   const semantic = pick('main') || pick('[role="main"]') || null;
   const container = semantic || usableBody(doc);
   if (!container) return null;
@@ -1282,8 +1282,10 @@ const isPanel = (n: Node | null, opts: RenderOpts): boolean => {
 // find reveals); tab panels, which are all rendered as the extension clicks every tab (Starlight and Biome hide the
 // inactive ones); a block holding code, which is a code tab the page did not mark up as one (docs.sentry.io keeps
 // its yarn, pnpm, Loader and CDN variants in bare `<div hidden>`s: dropping them lost 5 unique code blocks) or a copy
-// buffer repeating visible code; and React streaming segments: React SSR (Next.js, Mintlify) sends late Suspense
-// content as `<div hidden id="S:0">`, or `<table hidden><tbody id="S:0">` in a table, and a script moves it into place.
+// buffer repeating visible code. React streaming segments (`<div hidden id="S:0">`, `<table hidden><tbody id="S:0">`)
+// were a fifth kind until 0.4.22 (P2A-081, T285): the replay in convert.ts moves every segment a browser would show
+// into place first, so a segment still standing here is one no call reveals, and Chrome never shows it. Printing it
+// put text that no reader of the page sees into the Markdown (and a <main> inside one replaced the visible page).
 //
 // The code exemption keeps the code and nothing else (C13, T121 panel): it exists for code, and a hidden block kept whole
 // for one <pre> printed all its prose, so `<div hidden><p>instructions</p><pre>x</pre></div>` carried the instructions.
@@ -1307,7 +1309,7 @@ const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
   if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return 'shown';
   // A tab panel is a block: all 27 on the corpus are <div>s, and `<a><span hidden role="tabpanel">` printed its text
   // as the link's (T124 panel: mimo).
-  if ((el.getAttribute('role') === 'tabpanel' && !PHRASING_TAGS.has(el.tagName)) || el.tagName === 'PRE' || isReactSegment(el)) return 'shown';
+  if ((el.getAttribute('role') === 'tabpanel' && !PHRASING_TAGS.has(el.tagName)) || el.tagName === 'PRE') return 'shown';
   let hasPre = hasPreCache.get(el);
   if (hasPre === undefined) hasPreCache.set(el, (hasPre = !!el.querySelector('pre')));
   return hasPre ? 'code' : 'hidden';
@@ -1317,22 +1319,6 @@ const isHiddenEl = (el: Element, opts: RenderOpts): boolean => hiddenKind(el, op
 // come from a hidden element of any kind (T124 panel: `<a><span hidden role="tabpanel">x</span></a>` was named x, and a
 // <main> inside a hidden tab panel became the root and dropped the visible <main>).
 const underHiddenAttr = (el: Element, opts: RenderOpts): boolean => !opts.includeHidden && el.hasAttribute('hidden');
-
-// React streaming segments as react-dom's server writes them (ReactFizzConfigDOM.js, startSegment*): `<div hidden id=…>`,
-// in a table context `<table hidden id=…>` or a `<table hidden>` whose <tbody>, <tr> or <colgroup> carries the id. The id
-// is the render's identifierPrefix, `S:` and the segment number in hex. A child's `S:` id counted on any hidden element
-// (C14, grok), and so did any element and anything after `S:`: `<img hidden id="S:0">` printed its alt and `id="S:evil"`
-// passed (T124 panel: codex, mimo). An HTML parser puts a <tbody> around `<table><tr>`, so a saved or re-serialised page
-// has `<table hidden><tbody><tr id=…>` (grok).
-const SEGMENT_ID = /S:[0-9a-f]+$/;
-const isReactSegment = (el: Element): boolean => {
-  if (el.tagName === 'DIV') return SEGMENT_ID.test(el.id);
-  if (el.tagName !== 'TABLE') return false;
-  if (SEGMENT_ID.test(el.id)) return true;
-  return [...el.children].some((c) =>
-    (/^(?:TBODY|TR|COLGROUP)$/.test(c.tagName) && SEGMENT_ID.test(c.id)) ||
-    (c.tagName === 'TBODY' && !c.id && [...c.children].some((r) => r.tagName === 'TR' && SEGMENT_ID.test(r.id))));
-};
 
 // The <pre> elements of a block, outermost only, without those in a hidden list item, row, cell or other entry of a
 // structure: such an entry is left out whole wherever it stands (T124 panel: codex, `<div hidden><ul><li hidden><pre>`
