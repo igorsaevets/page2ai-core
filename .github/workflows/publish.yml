@@ -332,11 +332,22 @@ jobs:
             fi
             sleep $((5 + RANDOM % 6))
           done
-          if ! npm audit signatures --json --include-attestations >"$RUNNER_TEMP/audit.json"; then
-            jq -c '{invalid, missing}' "$RUNNER_TEMP/audit.json" || cat "$RUNNER_TEMP/audit.json"
-            echo "::error::npm audit signatures failed for the install of $NAME@$VERSION"
-            exit 1
-          fi
+          # The attestation document of a fresh version can answer 404 for about a
+          # minute after the publish (0.4.3, 0.4.7 and 0.4.18 went red that way and
+          # were green on a re-run), so the audit gets about three minutes too.
+          TRIES=12
+          if [ "$PROBE" = true ]; then TRIES=3; fi
+          for i in $(seq 1 "$TRIES"); do
+            if npm audit signatures --json --include-attestations >"$RUNNER_TEMP/audit.json" 2>"$RUNNER_TEMP/audit.err"; then break; fi
+            if [ "$i" -eq "$TRIES" ]; then
+              jq -c '{invalid, missing}' "$RUNNER_TEMP/audit.json" || cat "$RUNNER_TEMP/audit.json"
+              cat "$RUNNER_TEMP/audit.err"
+              echo "::error::npm audit signatures failed for the install of $NAME@$VERSION, $TRIES tries"
+              exit 1
+            fi
+            echo "npm audit signatures failed on try $i of $TRIES, retrying"
+            sleep $((10 + RANDOM % 6))
+          done
           if ! jq -e --arg n "$NAME" --arg v "$VERSION" 'any((.verified // [])[]; .name == $n and .version == $v)' "$RUNNER_TEMP/audit.json" >/dev/null; then
             echo "::error::npm verified no attestation for $NAME@$VERSION"
             exit 1
