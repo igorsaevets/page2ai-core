@@ -137,3 +137,49 @@ describe('BL-39: a streamed segment goes where the page\'s own script puts it', 
     expect(md(html)).toBe(expected);
   });
 });
+
+// P2A-081, P2A-082 and React's external runtime (T285). react-dom's own server renderer (0.0.0-experimental-e04279e7-
+// 20261119) with `unstable_externalRuntimeSrc` sends the calls as `<template data-rci>` (EXTERNAL_PAGE, its bytes as
+// written); in Chrome 158 its runtime script (react-dom/unstable_server-external-runtime.js) revealed every segment,
+// and 0.4.21 printed both fallbacks and lost the section and the row, its segments being outside <main>. Each case
+// below gave Chrome's text, except the two marked: `D:/AI_Scratch/web-to-md/t285-work/ext/` (render_ext.mjs,
+// make_cases.py, chrome_pages.py). A segment that no call reveals stays hidden in Chrome, so none is printed.
+const EXTERNAL_PAGE = "<!DOCTYPE html><html><head><script src=\"external-runtime.js\" async=\"\"></script><link rel=\"expect\" href=\"#_R_\" blocking=\"render\"/><title>Streaming test</title></head><body><main><h1>Shell title SHELL</h1><p>Visible start START.</p><!--$?--><template id=\"B:0\"></template><p>Loading FALLBACK</p><!--/$--><table><tbody><tr><td>Shell cell</td></tr><!--$?--><template id=\"B:1\"></template><tr><td>Row loading</td></tr><!--/$--></tbody></table><p>Visible end END.</p></main><template id=\"_R_\"></template><div hidden id=\"S:0\"><section><h2>Late heading ALPHA</h2><p>Late paragraph BRAVO one two three four five.</p><!--$?--><template id=\"B:2\"></template><p>Inner loading CHARLIE</p><!--/$--></section></div><template data-rci=\"\" data-bid=\"B:0\" data-sid=\"S:0\"></template><table hidden><tbody id=\"S:1\"><tr><td>Late cell ECHO</td></tr></tbody></table><template data-rci=\"\" data-bid=\"B:1\" data-sid=\"S:1\"></template><div hidden id=\"S:2\"><p>Nested late text DELTA six seven eight.</p></div><template data-rci=\"\" data-bid=\"B:2\" data-sid=\"S:2\"></template></body></html>";
+const SEG0 = '<div hidden id="S:0"><p>SEGZERO</p></div>';
+const SEG1 = '<div hidden id="S:1"><p>SEGONE</p></div>';
+const B1 = '<!--$?--><template id="B:1"></template><p>Later...</p><!--/$-->';
+const RCI = (b: string, s: string): string => `<template data-rci="" data-bid="${b}" data-sid="${s}"></template>`;
+describe("React's external runtime and segments no call reveals (P2A-081, P2A-082, T285)", () => {
+  it('the external runtime page react-dom writes reads as Chrome shows it', () => {
+    expect(md(EXTERNAL_PAGE)).toBe("# Streaming test\n\n# Shell title SHELL\n\nVisible start START.\n\n## Late heading ALPHA\n\nLate paragraph BRAVO one two three four five.\n\nNested late text DELTA six seven eight.\n\n| Shell cell |\n| --- |\n| Late cell ECHO |\n\nVisible end END.");
+  });
+  it.each([
+    ['data-rci fills its boundary', page(`<p>A</p>${BOUNDARY}<p>Z</p>`, SEG0 + RCI('B:0', 'S:0')), 'A\n\nSEGZERO\n\nZ'],
+    ['data-rri fills it too (once its stylesheets load)',
+      page(`<p>A</p>${BOUNDARY}<p>Z</p>`, `${SEG0}<template data-rri="" data-bid="B:0" data-sid="S:0" data-sty="[]"></template>`), 'A\n\nSEGZERO\n\nZ'],
+    ['data-rsi fills its placeholder',
+      page('<p>A</p><template id="P:1"></template><p>Z</p>', `${SEG1}<template data-rsi="" data-sid="S:1" data-pid="P:1"></template>`), 'A\n\nSEGONE\n\nZ'],
+    ['two in document order', page(`<p>A</p>${BOUNDARY}<p>M</p>${B1}<p>Z</p>`, SEG0 + RCI('B:0', 'S:0') + SEG1 + RCI('B:1', 'S:1')),
+      'A\n\nSEGZERO\n\nM\n\nSEGONE\n\nZ'],
+    ['data-rxi (client rendering) keeps the fallback',
+      page(`<p>A</p>${BOUNDARY}<p>Z</p>`, `${SEG0}<template data-rxi="" data-bid="B:0" data-dgst="x"></template>`), 'A\n\nLoading...\n\nZ'],
+    ['a template in <head> is not run', `<html><head>${RCI('B:0', 'S:0')}</head><body><main><p>A</p>${BOUNDARY}<p>Z</p></main>${SEG0}</body></html>`,
+      'A\n\nLoading...\n\nZ'],
+    ['nor one in <noscript>', page(`<p>A</p>${BOUNDARY}<p>Z</p>`, `${SEG0}<noscript>${RCI('B:0', 'S:0')}</noscript>`), 'A\n\nLoading...\n\nZ'],
+    ["a call that throws ends the runtime's loop (no node before the boundary's <template>)",
+      page(`<p>A</p><div><template id="B:0"></template><p>Loading...</p><!--/$--></div>${B1}<p>Z</p>`, SEG0 + RCI('B:0', 'S:0') + SEG1 + RCI('B:1', 'S:1')),
+      'A\n\nLoading...\n\nLater...\n\nZ'],
+    // Not Chrome's: with no runtime script Chrome keeps the fallback, and with the template before its segment Chrome
+    // showed the segment (its runtime ran after the parse). React writes neither; inline calls are replayed the same way.
+    ['no runtime script: replayed all the same', page(`<p>A</p>${BOUNDARY}<p>Z</p>`, SEG0 + RCI('B:0', 'S:0')), 'A\n\nSEGZERO\n\nZ'],
+    ['the template before its segment: the fallback stays', page(`<p>A</p>${BOUNDARY}<p>Z</p>`, RCI('B:0', 'S:0') + SEG0), 'A\n\nLoading...\n\nZ'],
+    // P2A-081: Chrome never shows a segment no call reveals; 0.4.21 printed it (START SECRETSEG END).
+    ['a segment no call reveals is left out', '<html><body><p>START</p><div hidden id="S:0"><p>SECRETSEG</p></div><p>END</p></body></html>', 'START\n\nEND'],
+    ['and one in a table', '<html><body><p>START</p><table hidden><tbody id="S:1"><tr><td>SECRETROW</td></tr></tbody></table><p>END</p></body></html>', 'START\n\nEND'],
+    // P2A-082: a <main> inside one replaced the whole visible page on 0.4.21.
+    ['a <main> inside one is not the root', '<html><body><div><h1>Title</h1><p>Visible text.</p></div><div hidden id="S:0"><main><p>INJECTED</p></main></div></body></html>',
+      '# Title\n\nVisible text.'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(html)).toBe(expected);
+  });
+});

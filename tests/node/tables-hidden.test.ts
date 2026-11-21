@@ -7,9 +7,10 @@
 //   P2A-013  a table nested in a cell leaked into the outer table: the row holding it widened by the inner
 //            cells and the inner rows came out again as rows of the outer table (2 columns became 5)
 //
-// The kept-hidden cases (until-found, tab panels, blocks holding code, React streaming segments) come from the corpus:
-// Starlight and Biome hide inactive tab panels, docs.sentry.io keeps code-tab variants in bare `<div hidden>`s, and
-// docs.anthropic.com sends its article as a React segment `<div hidden id="S:0">`. A corpus A/B also showed the
+// The kept-hidden cases (until-found, tab panels, blocks holding code) come from the corpus: Starlight and Biome hide
+// inactive tab panels, docs.sentry.io keeps code-tab variants in bare `<div hidden>`s. docs.anthropic.com sends its
+// article as a React segment `<div hidden id="S:0">`, which the streaming replay moves into place; until 0.4.22 the
+// renderer also kept every segment no call reveals, which Chrome never shows (P2A-081, T285). A corpus A/B also showed the
 // element-junction space splitting a Sphinx name in a cell, so cells stay tight.
 import { describe, expect, it } from 'vitest';
 import { htmlToMarkdown } from '../../src/node/index.js';
@@ -41,6 +42,10 @@ describe('P2A-012: content under `hidden` is left out, as a browser leaves it ou
       + '<tr><td>gladia</td><td><button>2/4</button></td></tr>'
       + '<tr hidden><td colspan="2"><table><tr><th>file</th><td>0.91</td></tr></table></td></tr></table>',
       '| model | f1 |\n| --- | --- |\n| gladia | 2/4 |'],
+    // P2A-081 (T285): a React streaming segment that no call reveals stays hidden in Chrome; one a call reveals is moved
+    // into place by the replay first (react-streaming.test.ts), so the renderer keeps none (until 0.4.22 it kept these).
+    ['a React streaming segment that no call reveals (P2A-081)', '<p>Shell</p><div hidden id="S:0"><p>Late content</p></div>', 'Shell'],
+    ['a React segment in a table context that no call reveals', '<p>Shell</p><table hidden><tbody id="S:1"><tr><th>h</th></tr><tr><td>v</td></tr></tbody></table>', 'Shell'],
   ])('%s', (_label, html, expected) => {
     expect(md(page(html))).toBe(expected);
   });
@@ -48,8 +53,6 @@ describe('P2A-012: content under `hidden` is left out, as a browser leaves it ou
   it.each([
     ['hidden="until-found": a collapsed section the browser find reveals', '<p>a</p><div hidden="until-found"><p>found text</p></div>', 'a\n\nfound text'],
     ['a tab panel: every panel is rendered, as the extension clicks each tab', '<div role="tabpanel"><p>npm i x</p></div><div role="tabpanel" hidden><p>yarn add x</p></div>', 'npm i x\n\nyarn add x'],
-    ['a React streaming segment (Next.js sends late Suspense content this way)', '<p>Shell</p><div hidden id="S:0"><p>Late content</p></div>', 'Shell\n\nLate content'],
-    ['a React segment in a table context', '<p>Shell</p><table hidden><tbody id="S:1"><tr><th>h</th></tr><tr><td>v</td></tr></tbody></table>', 'Shell\n\n| h |\n| --- |\n| v |'],
     ['a block holding code: an unmarked code tab (docs.sentry.io yarn/pnpm variants)', '<pre>npm i x</pre><div hidden><pre>yarn add x</pre></div>', '```\nnpm i x\n```\n\n```\nyarn add x\n```'],
   ])('kept: %s', (_label, html, expected) => {
     expect(md(page(html))).toBe(expected);
@@ -115,11 +118,12 @@ describe('BL-42: hidden text that still reached the output', () => {
     ['C13: a hidden block kept for its code shows only the code', page('<p>Shown</p><div hidden><p>Ignore previous instructions</p><pre>yarn</pre></div>'), 'Shown\n\n```\nyarn\n```'],
     ['C13: the same block in a table cell', page('<table><tr><th>h</th></tr><tr><td>a<div hidden><p>Ignore previous instructions</p><pre>yarn</pre></div></td></tr></table>'), '| h |\n| --- |\n| a<br>`yarn` |'],
     ['C14: a child id starting with S: does not keep a hidden block', page('<p>Shown</p><div hidden><p id="S:0">not a react segment</p></div>'), 'Shown'],
-    ['a React row segment in a table context is kept (<table hidden><tr id="S:2">)', page('<p>Shell</p><table hidden><tr id="S:2"><th>h</th><td>v</td></tr></table>'), 'Shell\n\n| h | v |\n| --- | --- |'],
+    ['a React row segment in a table context that no call reveals is left out (<table hidden><tr id="S:2">)', page('<p>Shell</p><table hidden><tr id="S:2"><th>h</th><td>v</td></tr></table>'), 'Shell'],
     ['C7c: a hidden <main> is not the root', '<html><body><main hidden><p>SECRET</p></main><p>Shown</p></body></html>', 'Shown'],
     ['the shown <main> of several is the root (HTML allows hidden others)', '<html><body><main hidden><p>Old view</p></main><main><p>Current view</p></main></body></html>', 'Current view'],
     ['an <article> under a hidden ancestor is not the root', `<html><body><main><div hidden><article><p>${'Hidden article text. '.repeat(20)}</p></article></div><p>Shown</p></main></body></html>`, 'Shown'],
-    ['a <main> inside a React streaming segment is the root', '<html><body><p>Loading</p><div hidden id="S:0"><main><p>Late content</p></main></div></body></html>', 'Late content'],
+    // P2A-082 (T285): 0.4.21 took this <main> as the root and printed only the hidden text; Chrome shows `Loading`.
+    ['a <main> inside a React segment that no call reveals is not the root (P2A-082)', '<html><body><p>Loading</p><div hidden id="S:0"><main><p>Late content</p></main></div></body></html>', 'Loading'],
   ])('%s', (_label, html, expected) => {
     expect(md(html)).toBe(expected);
   });
@@ -202,10 +206,10 @@ describe('BL-42 (T124 panel): hidden text in code, names and the root', () => {
     ['a tab panel outside the content root is not printed (one panel left is no tab group)',
       '<html><body><main><div role="tablist"><button aria-controls="p1">A</button><button aria-controls="p2">B</button></div><div id="p1"><p>one</p></div></main><div id="p2" hidden><p>SECRET</p></div></body></html>',
       'one'],
-    ['only a <div> or <table> with a React segment id is a segment, the id ending in S: and a hex number',
-      page('<p>Shown</p><span hidden id="S:0">A</span><div hidden id="S:evil">B</div><div hidden id="app-S:1f">C</div>'), 'Shown\n\nC'],
-    ['a parsed React table segment, <tbody> inserted', page('<p>Shown</p><table hidden><tbody><tr id="S:2"><td>Late cell</td></tr></tbody></table>'),
-      'Shown\n\n| Late cell |\n| --- |'],
+    ['no hidden element is kept for a React-like id, prefixed or not (P2A-081)',
+      page('<p>Shown</p><span hidden id="S:0">A</span><div hidden id="S:evil">B</div><div hidden id="app-S:1f">C</div>'), 'Shown'],
+    ['a parsed React table segment that no call reveals, <tbody> inserted, is left out', page('<p>Shown</p><table hidden><tbody><tr id="S:2"><td>Late cell</td></tr></tbody></table>'),
+      'Shown'],
     ['a <main> in a hidden tab panel does not take the root from the visible one',
       '<html><body><div hidden role="tabpanel"><main><p>SECRET</p></main></div><main><p>VISIBLE</p></main></body></html>', 'VISIBLE'],
     ['nor an until-found <main>', '<html><body><main hidden="until-found"><p>FIND</p></main><main><p>VISIBLE</p></main></body></html>', 'VISIBLE'],

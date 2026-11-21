@@ -91,8 +91,14 @@ const adoptAfterBody = (doc: Document): Document => {
 // start as React writes it (all 23 calls on the 8 streaming pages begin the script or follow `;`), segment and boundary
 // parsed before the script, as getElementById sees them when it runs, and only on markup React writes: one of its
 // segment wrappers and a pending boundary closed by its own comment. What a script does is not checked: `$RC` defined
-// as a no-op, or not at all, still moves segments; no real page streams without React's runtime. The external runtime
-// (`<template data-rci>`, `unstable_externalRuntimeSrc`) is not replayed: none of the 16 pages uses it.
+// as a no-op, or not at all, still moves segments; no real page streams without React's runtime.
+// React's external runtime (`unstable_externalRuntimeSrc`; in Next.js the App Router flag that a canary took on
+// 2026-11-02, vercel/next.js#97570, for a Content-Security-Policy without unsafe-inline) sends the same calls as data:
+// `<template data-rci="" data-bid="B:0" data-sid="S:0">` for $RC, data-rri for $RR, data-rsi (data-sid, data-pid) for
+// $RS, data-rxi for $RX (ReactFizzConfigDOM.js), and its script (ReactDOMServerExternalRuntime.js) runs each <template>
+// in <body> in document order and removes it. Those are replayed too since 0.4.22 (T285): until then a segment that
+// such a page streamed stayed hidden, and only the renderer's exemption for React segment ids printed it, at the end of
+// the page; that exemption printed every segment no call reveals, which Chrome never shows (P2A-081), and is gone.
 // Ids as React prints them: an optional identifierPrefix, then B:, S: or P: and hex.
 const FILL_BOUNDARY = /\$R[CR]\("([^"\\]*B:[0-9a-f]+)","([^"\\]*S:[0-9a-f]+)"/;
 const FILL_PLACEHOLDER = /\$RS\("([^"\\]*S:[0-9a-f]+)","([^"\\]*P:[0-9a-f]+)"/;
@@ -132,8 +138,8 @@ const JS_TYPE = /^((application|text)\/(x-)?(ecma|java)script|text\/(javascript1
 // children again and again still stops where the budget does (Chrome makes every move; that work grows with the
 // square of the chain), and a segment refused once is not walked again.
 // P2A-079 (T280): a segment that a call reached and did not reveal (refused for cost, or queued after a reveal that
-// threw) stays hidden, as in Chrome: it loses its React id, which the renderer otherwise prints as shown (the recovery
-// for segments no replayed call names). 0.4.20 printed them, with their fallback.
+// threw) stays hidden, as in Chrome. 0.4.20 printed them, with their fallback; 0.4.21 took their React id away, which
+// the renderer printed as shown, and since 0.4.22 it prints no hidden segment at all (P2A-081).
 // P2A-080 (T280): $RC sets `.data` on whatever stands before the boundary's <template> (a text node then reads `$`,
 // as Chrome shows it); with nothing there it throws, and so does $RS on a missing segment, a missing placeholder or a
 // placeholder inside its segment: the rest of that script does not run. 0.4.20 wanted a `$?`/`$~` comment there and
@@ -266,7 +272,6 @@ const moveChildren = (scan: StreamScan, segment: Node, parent: Node, before: Nod
 };
 const keepHidden = (scan: StreamScan, segment: Element): void => {
   scan.refused.add(segment);
-  segment.removeAttribute('id');
 };
 
 // getElementById as the script sees it when it runs: the first element with that id still in the document, if the
@@ -385,20 +390,53 @@ const reveal = (scan: StreamScan, queue: Element[]): void => {
   }
 };
 
+// An instruction <template> of React's external runtime, as its script finds it: in <body> (the script reads
+// `document.body.querySelectorAll('template')`, then the templates appended to <body>), and an element there at all,
+// so not inside <noscript>, <iframe> and the like, whose content is text in a browser that runs scripts (P2A-077).
+// data-rxi ($RX, client rendering) keeps the fallback, as the inline $RX does here, so it is not collected.
+const isInstruction = (el: Element): boolean => {
+  if (el.hasAttribute('data-rxi')) return false;
+  if (!['data-rri', 'data-rci', 'data-rsi'].some((a) => el.hasAttribute(a))) return false;
+  if (ancestor(el, (n) => isTag(n, /^(?:NOSCRIPT|IFRAME|NOEMBED|NOFRAMES|XMP|TEMPLATE)$/i)) !== null) return false;
+  return ancestor(el, (n) => isTag(n, /^BODY$/i)) != null;
+};
+// What the runtime's handleNode does with one template: data-rri before data-rci before data-rsi, as it tests them.
+// Returns true when the call throws: its loop over the templates ends there.
+const runInstruction = (scan: StreamScan, tpl: Element, queue: Element[]): boolean => {
+  const kind = ['rri', 'rci', 'rsi'].find((k) => tpl.hasAttribute(`data-${k}`));
+  const sid = tpl.getAttribute('data-sid') ?? '';
+  const threw = kind === 'rsi'
+    ? fillPlaceholder(scan, tpl, sid, tpl.getAttribute('data-pid') ?? '')
+    : queueBoundary(scan, tpl, tpl.getAttribute('data-bid') ?? '', sid, queue);
+  if (!threw) tpl.remove();
+  return threw;
+};
+
 const revealStreamedSegments = (doc: Document, bytes: number): Document => {
   // Which scripts run is decided before anything moves: a browser runs each one as it parses it, before a later reveal
-  // can remove it (P2A-073: 0.4.19 asked after the moves and skipped a script an earlier fill had removed).
-  const runs: [Element, string][] = [];
-  for (const script of doc.querySelectorAll('script')) {
-    const text = script.textContent || '';
-    if (text.includes('$R') && runsAsClassicScript(script)) runs.push([script, text]);
+  // can remove it (P2A-073: 0.4.19 asked after the moves and skipped a script an earlier fill had removed). The external
+  // runtime's templates are taken in the same document order (a page streams one way or the other; React writes both
+  // after the segment they name).
+  const runs: [Element, string | null][] = [];
+  for (const el of doc.querySelectorAll('script, template')) {
+    if (el.tagName.toUpperCase() === 'TEMPLATE') {
+      if (isInstruction(el)) runs.push([el, null]);
+      continue;
+    }
+    const text = el.textContent || '';
+    if (text.includes('$R') && runsAsClassicScript(el)) runs.push([el, text]);
   }
   let scan: StreamScan | undefined;
   const queue: Element[] = [];
-  for (const [script, text] of runs) {
+  let runtimeStopped = false; // a call that throws ends the external runtime's loop over its templates
+  for (const [el, text] of runs) {
+    if (text === null) {
+      if (!runtimeStopped) runtimeStopped = runInstruction((scan ??= scanDocument(doc, bytes)), el, queue);
+      continue;
+    }
     for (const m of text.matchAll(STREAM_CALL)) {
       scan ??= scanDocument(doc, bytes);
-      const threw = m[1] ? queueBoundary(scan, script, m[1], m[2], queue) : fillPlaceholder(scan, script, m[3], m[4]);
+      const threw = m[1] ? queueBoundary(scan, el, m[1], m[2], queue) : fillPlaceholder(scan, el, m[3], m[4]);
       if (threw) break;
     }
   }
