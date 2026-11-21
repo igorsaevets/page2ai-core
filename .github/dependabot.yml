@@ -5,6 +5,19 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # A version is proposed only once it is a week old (majors two weeks): a release
+    # pulled or found malicious in its first days never reaches a PR. Security updates
+    # do not wait.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    # Every minor and patch update in one PR per run, instead of one PR per package
+    # (16 Dependabot PRs piled up across the repos by 2026-11-21). Majors still come
+    # one by one: each needs its own check.
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
     ignore:
       # The depth cap replays htmlparser2's Tokenizer over the copy linkedom parses
       # with, and tests/node/attribute-case.test.ts requires one shared copy. A major
@@ -16,3 +29,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
