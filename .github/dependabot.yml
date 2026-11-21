@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The depth cap replays htmlparser2's Tokenizer over the copy linkedom parses
+      # with, and tests/node/attribute-case.test.ts requires one shared copy. A major
+      # that linkedom does not take yet installs a second copy (PR #76, 12.0.0: three
+      # tests red). Move htmlparser2 by hand together with linkedom.
+      - dependency-name: htmlparser2
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
