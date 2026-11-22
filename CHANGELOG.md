@@ -2,6 +2,24 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.23
+
+P2A-083 (found in T285 while reading prisma.io through Page2AI) and its measurement (T287).
+
+- **A `<dialog>` without `open` is no longer printed (P2A-083).** The user-agent stylesheet hides it
+  (`dialog:not([open]) { display: none; }`), and Chrome 158 showed none of 30 closed dialogs on 14 live pages, while
+  core printed their text: search boxes, sign-in and cart panels, contact forms, and on prisma.io 467 words of «Use with
+  your agent» copy prompts that no reader of the page sees. A closed dialog is now left out whole, like an element with
+  `hidden`, code included: in the output, in link names, in the choice of `<main>`, and past the depth cap.
+  `includeHidden: true` converts it as before.
+- **`popover` elements are still converted.** The same stylesheet hides `[popover]:not(:popover-open)`, but the HTML of
+  docs.astro.build marks Starlight's sidebar as a popover, and Chrome shows it at desktop width once the page has run,
+  so the attribute alone does not say whether the reader sees it.
+- Measured before the release: the 1,065 saved pages convert byte for byte as on 0.4.22; of 236 live pages that AI
+  agents opened (one per host, from the agent-fetch-outcomes dataset) 234 are identical and 2 changed (a GitHub gist's
+  closed Embed and Clone panels; a shop's contact, notify-me, cart and image lightbox dialogs), and Chrome shows none of
+  the removed text. Every new test fails on 0.4.22.
+
 ## 0.4.22
 
 P2A-081 (filed by the T279 review panel) and what measuring it found (T285). Each browser case was loaded in Chrome 158
