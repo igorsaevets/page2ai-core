@@ -2,6 +2,28 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.24
+
+P2A-086 (found in T286 while reading code.claude.com through Page2AI) and its measurement (T289).
+
+- **An in-page table of contents is no longer printed (P2A-086).** Mintlify puts its «On this page» list inside
+  `<main>`, ahead of the article: on https://code.claude.com/docs/en/mcp that was 11,624 characters of section links
+  before the first sentence. A `<nav>` (or `role="navigation"`) is now left out when it is only a table of contents: at
+  least two of its links reach an element of this page by its id outside the nav and make 80% of its links (`#` and
+  `#top` aside), it holds no tab, and its text outside the links is a label (40 characters or a quarter of the nav).
+  A nav that also carries text is kept, so is every other nav: breadcrumbs, prev/next links, menus, tab bars.
+- **The page title is written once (P2A-086).** The title heading skipped the page's own heading only when that was
+  the first heading met, so a table of contents' «On this page», a news kicker, a menu's hidden heading or a blog's
+  site-name `<h1>` above it left the title twice. Now the first `<h1>` that matches the title is skipped wherever it
+  stands; headings inside a kept nav do not count as the first heading; the match also ignores hidden text inside the
+  heading (developer.chrome.com keeps a hidden widget in every `<h1>`). A title-equal h2-h6 after another heading is
+  content and stays.
+- Measured before the release: of 1,065 saved pages 61 changed and of 236 live pages that AI agents opened 18, all by
+  removal only (no word added, tables and code unchanged): tables of contents on 8 and 15 pages, the duplicate title
+  on the rest. Pages with the title twice at any heading level: 84 to 32 saved, 9 to 5 live. Text removed that the
+  output does not repeat elsewhere: the tables' labels, and on 2 pages entries that paraphrase their sections. Every
+  new test fails on 0.4.23.
+
 ## 0.4.23
 
 P2A-083 (found in T285 while reading prisma.io through Page2AI) and its measurement (T287).
