@@ -75,6 +75,9 @@ interface RenderOpts {
   // visually hidden "Main navigation") do not count as the page's first heading for the title dedupe (P2A-086), and a
   // nav inside it is not tested again as a table of contents (one test per outermost nav keeps the cost linear).
   inNav?: boolean;
+  // The root is <body> and its site chrome is left out (P2A-089, planPageChrome): set until the walk enters sectioning
+  // content, where a landmark belongs to that content.
+  pageChrome?: PageChrome;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -118,6 +121,10 @@ const renderOnce = (
   const parts: string[] = [];
 
   const root = pickContentRoot(doc, opts);
+  if (root && (root.tagName === 'BODY' || root.tagName === 'HTML')) {
+    const pageChrome = planPageChrome(root, opts);
+    if (pageChrome) opts = { ...opts, pageChrome };
+  }
   const rawTitle = cleanInline(documentTitle(doc));
   // The site suffix is dropped, not relocated: an earlier draft emitted it as a `site_name:`
   // frontmatter field, which put the exact chrome string the cleanup had just removed back
@@ -426,6 +433,78 @@ const pickContentRoot = (doc: Document, opts: RenderOpts): Element | null => {
     if (dominatesContainer || dwarfsSiblings) return best.el;
   }
   return container;
+};
+
+// Site chrome on a page converted from <body> (P2A-089). A page with no shown <main> and no dominant <article> is
+// rendered from <body>, and every site menu, site header, footer and sidebar in it was printed, mostly ahead of the
+// article: on a third of the pages agents open. A <main> leaves exactly these outside. On such a page a landmark that
+// is not inside sectioning content is left out: <nav>, <header>, <footer>, <aside> and the roles navigation, banner,
+// contentinfo and complementary (HTML-AAM maps a <header> or <footer> outside article, aside, main, nav and section to
+// the page's banner and contentinfo; inside them they belong to that section and stay). Two exceptions keep content:
+// - the landmark that holds the page's first shown <h1> stays (a hero <header> with the title and its text, a sidebar
+//   that is the page); a menu inside it still goes;
+// - nothing is left out when what remains would be too little: a page whose content is its navigation (a sitemap, a
+//   table of contents page) or sits in a <footer> by broken markup is rendered whole, as before.
+// Measured T295 (D:/AI_Scratch/web-to-md/t295-work/): on trafilatura's labelled evaluation set (960 pages with strings
+// of the main text and boilerplate strings, its tests/evaldata.json) all 2,667 main-text strings found before are still
+// found and 96 boilerplate strings are no longer printed; of 1,065 saved pages 185 change and of 236 live pages agents
+// opened 42, by removal only: menus, footers with contact and copyright lines, sidebars (Tailwind's docs navigation).
+// Each exception decides pages: without the sectioning one a main-text string is lost (skateboardmsm.de); without the
+// <h1> one the hero of commoncrawl.org/about and the prices of rev.ai/pricing go. The guard kept 5 pages whole, all
+// articles under heavy menus: it is there for the site map shape, which the samples lack, and its share sits in an
+// empty gap of the measured shares (0.19 to 0.27).
+const PAGE_LANDMARK_TAGS = new Set(['NAV', 'HEADER', 'FOOTER', 'ASIDE']);
+const PAGE_LANDMARK_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary']);
+const SECTIONING_TAGS = new Set(['ARTICLE', 'SECTION', 'MAIN', 'ASIDE', 'NAV']);
+const SECTIONING_ROLES = new Set(['article', 'region', 'main', 'complementary', 'navigation']);
+const roleOf = (el: Element): string => (el.getAttribute('role') || '').trim().toLowerCase();
+const isPageLandmark = (el: Element): boolean => PAGE_LANDMARK_TAGS.has(el.tagName) || PAGE_LANDMARK_ROLES.has(roleOf(el));
+const isSectioning = (el: Element): boolean => SECTIONING_TAGS.has(el.tagName) || SECTIONING_ROLES.has(roleOf(el));
+const PAGE_CHROME_MIN_KEPT_CHARS = 200;
+const PAGE_CHROME_MIN_KEPT_SHARE = 0.25;
+// At most this many <h1> elements are tried for the first shown one, so a page of hidden headings costs no more.
+const PAGE_CHROME_H1_TRIES = 64;
+interface PageChrome {
+  // The page's first shown <h1> and its ancestors up to the root: a landmark among them stays.
+  keep: Set<Element>;
+}
+const planPageChrome = (root: Element, opts: RenderOpts): PageChrome | null => {
+  const shown = (el: Element): boolean => {
+    for (let e: Element | null = el; e && e !== root; e = e.parentElement) {
+      if (isAriaHidden(e) || isHiddenEl(e, opts)) return false;
+    }
+    return true;
+  };
+  let h1: Element | null = null;
+  let tries = 0;
+  for (const h of root.querySelectorAll('h1') as unknown as Iterable<Element>) {
+    if (++tries > PAGE_CHROME_H1_TRIES) break;
+    if (shown(h)) { h1 = h; break; }
+  }
+  const keep = new Set<Element>();
+  for (let a: Element | null = h1; a && a !== root; a = a.parentElement) keep.add(a);
+  // The text the walk would print and the part of it inside the landmarks left out, measured as renderNode decides.
+  let all = 0;
+  let chrome = 0;
+  const walk = (node: Node, on: boolean, inChrome: boolean): void => {
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      const n = (node.textContent || '').replace(/\s+/g, ' ').trim().length;
+      if (n) { all += n + 1; if (inChrome) chrome += n + 1; }
+      return;
+    }
+    if (node.nodeType !== 1 /* ELEMENT_NODE */) return;
+    const e = node as Element;
+    if (SKIP_TAGS.has(e.tagName) || isAriaHidden(e) || hiddenKind(e, opts) === 'hidden') return;
+    if (on && !inChrome) {
+      if (isPageLandmark(e) && !keep.has(e)) inChrome = true;
+      else if (isSectioning(e)) on = false;
+    }
+    for (const c of e.childNodes) walk(c, on, inChrome);
+  };
+  walk(root, true, false);
+  const kept = all - chrome;
+  if (!chrome || kept < PAGE_CHROME_MIN_KEPT_CHARS || kept < PAGE_CHROME_MIN_KEPT_SHARE * all) return null;
+  return { keep };
 };
 
 // A tab heading keeps at most this many characters of its label. A label is written once per tab or panel that names
@@ -808,6 +887,10 @@ const renderNode = (
   if (isAriaHidden(el)) return;
   // A kept button with block content (an accordion's heading, a video card): its icon glyphs stay out (inButton).
   if (tag === 'BUTTON') opts = { ...opts, inButton: true };
+  if (opts.pageChrome) {
+    if (isPageLandmark(el) && !opts.pageChrome.keep.has(el)) return;
+    if (isSectioning(el)) opts = { ...opts, pageChrome: undefined };
+  }
   if (!opts.inNav && (tag === 'NAV' || (el.getAttribute('role') || '').trim().toLowerCase() === 'navigation')) {
     if (isInPageToc(el, opts)) return;
     opts = { ...opts, inNav: true };
