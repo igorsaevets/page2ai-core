@@ -2,6 +2,30 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.25
+
+P2A-089 (found in T289 while measuring P2A-086) and its measurement (T295).
+
+- **Site chrome is left out on pages converted from `<body>` (P2A-089).** A page with no shown `<main>` and no
+  dominant `<article>` is converted from `<body>`, and every site menu, site header, footer and sidebar in it was
+  printed, mostly ahead of the article: on 345 of 1,065 saved pages and 76 of 236 live pages that AI agents opened.
+  On such a page a `<nav>`, `<header>`, `<footer>` or `<aside>` (or the roles navigation, banner, contentinfo,
+  complementary) that is not inside `<article>`, `<section>`, `<main>`, `<aside>` or `<nav>` is now left out: the
+  landmarks a `<main>` leaves outside. A header or footer inside sectioning content belongs to it and stays.
+- **Two exceptions keep content.** The landmark that holds the page's first shown `<h1>` stays (a hero header with the
+  title and its text, a sidebar that is the page), while a menu inside it still goes. And nothing is left out when the
+  text that would remain is under 200 characters or under a quarter of the page: a short page, or a site map whose
+  content is its navigation, is converted whole, as before.
+- Measured before the release: on trafilatura's labelled evaluation set (960 pages, each with strings of its main text
+  and boilerplate strings) all 2,667 main-text strings found before are still found and 96 boilerplate strings are no
+  longer printed. Of 1,065 saved pages 185 changed and of 236 live pages 42, all by removal only (no line added): menus,
+  footers, sidebars, newsletter boxes. Each exception decides pages: without the sectioning one a main-text string is
+  lost; without the `<h1>` one the hero of commoncrawl.org/about and the prices of rev.ai/pricing go. Conversion time
+  on 1,285 pages: +0.3%. Every new test fails on 0.4.24 except the three that pin what stays whole.
+- **A menu's links are no longer in the output on these pages**, as on pages with a `<main>`: an agent that needs a
+  site's menu to find the next page reads it from a page where it is content (a site map) or follows the page's own
+  links.
+
 ## 0.4.24
 
 P2A-086 (found in T286 while reading code.claude.com through Page2AI) and its measurement (T289).
