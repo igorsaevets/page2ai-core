@@ -32,7 +32,8 @@
 // elements as siblings at the limit instead; here their attributes go (links, image wrappers, headings below the cap),
 // so a page nested deeper than 200 loses that structure below 200, never its shown words: on 0.4.16 such a page still
 // converted whole up to about 347 levels in Chrome's worker and about 800 in Node.
-// An element that hides what it holds (the `hidden` attribute, inline display:none or visibility:hidden, or a tag the
+// An element that hides what it holds (the `hidden` attribute, inline display:none or visibility:hidden, a <dialog>
+// without `open` (P2A-083), or a tag the
 // renderer skips: <select>, <template>, <noscript>, <svg>, a self-closed <script/>...) is removed past the cap WITH its
 // content: removing only its tag would show hidden text, which the renderer keeps out as a channel for instructions the
 // reader never sees (0.4.17 showed it all: T260). The hidden kinds the renderer does show (tab panels, code, React
@@ -45,7 +46,7 @@
 // per name, an implied close looks at the top of the stack only, and the output is written as it goes (0.4.17 kept
 // every cut in a list: about 190 bytes each, 570 MB for 9 MB of tags).
 import { Tokenizer } from 'htmlparser2';
-import { SKIP_TAGS, STYLE_HIDDEN_RE } from './basic-renderer.js';
+import { SKIP_TAGS, STYLE_HIDDEN_RE, isClosedDialog } from './basic-renderer.js';
 
 // How deep the parse may nest (html = 1). Below the shallowest failure measured (Chrome 157's worker: nested tables
 // 347 levels, blockquotes ~390): room for shapes not measured, other browsers' workers and frames added later; 4.8x the
@@ -159,6 +160,7 @@ const scan = (html: string, cap: number): Scan => {
   let tagName = '';
   let tagFrom = -1;
   let tagHides = false; // the start tag being read has `hidden` or a hiding inline style
+  let tagOpen = false; // ... or `open`, which a <dialog> needs to be shown (P2A-083)
   let attrName = '';
   let attrValue = '';
   // a removed element whose content goes with it: its place in the input stack (1-based), where its start tag began
@@ -212,7 +214,7 @@ const scan = (html: string, cap: number): Scan => {
   const openTag = (to: number, selfClosing: boolean): void => {
     const name = tagName;
     const from = tagFrom;
-    const hides = tagHides;
+    const hides = tagHides || (name === 'dialog' && !tagOpen);
     tagName = '';
     // the input's implied closes (Parser.emitOpenTag)
     const closes = IMPLIES_CLOSE.get(name);
@@ -312,6 +314,7 @@ const scan = (html: string, cap: number): Scan => {
         tagName = html.slice(start, end).toLowerCase();
         tagFrom = start - 1;
         tagHides = false;
+        tagOpen = false;
       },
       onopentagend(end: number) {
         openTag(end + 1, false);
@@ -335,6 +338,7 @@ const scan = (html: string, cap: number): Scan => {
         attrName = html.slice(start, end).toLowerCase();
         attrValue = '';
         if (attrName === 'hidden') tagHides = true;
+        if (attrName === 'open') tagOpen = true;
       },
       onattribdata(start: number, end: number) {
         if (attrName === 'style') attrValue += html.slice(start, end);
@@ -378,7 +382,8 @@ export const nestingDepth = (html: string, cap: number = MAX_PARSE_DEPTH): { dep
 
 // An element the renderer never shows the content of, as the tree has it (basic-renderer.ts hiddenKind, SKIP_TAGS).
 const hidesInTree = (el: Element): boolean =>
-  SKIP_TAGS.has(el.tagName.toUpperCase()) || el.hasAttribute('hidden') || STYLE_HIDDEN_RE.test(el.getAttribute('style') || '');
+  SKIP_TAGS.has(el.tagName.toUpperCase()) || el.hasAttribute('hidden') || isClosedDialog(el) ||
+  STYLE_HIDDEN_RE.test(el.getAttribute('style') || '');
 
 // What an element too deep for the walks leaves in its place, in document order: its text and other non-element nodes,
 // its void elements (<br>, <img>: leaves), and a <br> where a block began or ended after text, as the text pass does;

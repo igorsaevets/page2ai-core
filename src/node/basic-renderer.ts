@@ -319,7 +319,7 @@ const contentTextLength = (el: Element): number => {
     const e = node as Element;
     if (CHROME_TAGS.has(e.tagName)) return;
     if ((e.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return;
-    if (e.hasAttribute('hidden')) return;
+    if (e.hasAttribute('hidden') || isClosedDialog(e)) return;
     for (const c of e.childNodes) walk(c);
   };
   walk(el);
@@ -1296,6 +1296,15 @@ const isPanel = (n: Node | null, opts: RenderOpts): boolean => {
 // Catches the common injection pattern: `<span style="display:none">prompt injection</span>`.
 export const STYLE_HIDDEN_RE = /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i;
 const isStyleHidden = (el: Element): boolean => STYLE_HIDDEN_RE.test(el.getAttribute('style') || '');
+// A <dialog> without `open` (P2A-083, T287): the user-agent stylesheet gives `dialog:not([open]) { display: none; }`
+// (HTML, Rendering), so a browser shows nothing of it until a script opens it, and it is left out whole like `hidden`,
+// code included: it is a layer the reader opens, not a code tab the page shows one variant of. Measured before the
+// change: Chrome 158 showed none of 30 closed dialogs on 14 live pages (search boxes, sign-in and cart panels, contact
+// forms, and prisma.io's 458-word «Use with your agent» copy prompts). `popover` elements stay shown: the same
+// stylesheet hides `[popover]:not(:popover-open)`, but Starlight's docs sidebar is one in the HTML and Chrome shows it at
+// desktop width, so the attribute alone does not tell. A page whose own CSS shows a closed dialog is not seen here
+// (no CSSOM): none of the 30 did.
+export const isClosedDialog = (el: Element): boolean => el.tagName.toUpperCase() === 'DIALOG' && !el.hasAttribute('open');
 
 // data: image URIs above this size are dropped: a real inline icon is a few KB; anything larger
 // is either a smuggled payload or a tracking pixel that costs tokens for no content.
@@ -1304,7 +1313,7 @@ const DATA_URI_MAX_BYTES = 65_536;
 type HiddenKind = 'shown' | 'hidden' | 'code';
 const hiddenKind = (el: Element, opts: RenderOpts): HiddenKind => {
   if (opts.includeHidden) return 'shown';
-  if (isStyleHidden(el)) return 'hidden';
+  if (isStyleHidden(el) || isClosedDialog(el)) return 'hidden';
   if (!el.hasAttribute('hidden')) return 'shown';
   if ((el.getAttribute('hidden') || '').trim().toLowerCase() === 'until-found') return 'shown';
   // A tab panel is a block: all 27 on the corpus are <div>s, and `<a><span hidden role="tabpanel">` printed its text
@@ -1318,7 +1327,8 @@ const isHiddenEl = (el: Element, opts: RenderOpts): boolean => hiddenKind(el, op
 // Under the attribute at all, the kept kinds included. Code, a link's name, a tab's label and the page's <main> must not
 // come from a hidden element of any kind (T124 panel: `<a><span hidden role="tabpanel">x</span></a>` was named x, and a
 // <main> inside a hidden tab panel became the root and dropped the visible <main>).
-const underHiddenAttr = (el: Element, opts: RenderOpts): boolean => !opts.includeHidden && el.hasAttribute('hidden');
+const underHiddenAttr = (el: Element, opts: RenderOpts): boolean =>
+  !opts.includeHidden && (el.hasAttribute('hidden') || isClosedDialog(el));
 
 // The <pre> elements of a block, outermost only, without those in a hidden list item, row, cell or other entry of a
 // structure: such an entry is left out whole wherever it stands (T124 panel: codex, `<div hidden><ul><li hidden><pre>`

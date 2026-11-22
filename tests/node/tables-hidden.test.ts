@@ -64,6 +64,45 @@ describe('P2A-012: content under `hidden` is left out, as a browser leaves it ou
   });
 });
 
+describe('P2A-083: a <dialog> without `open` is left out, as a browser leaves it out', () => {
+  // The user-agent stylesheet gives `dialog:not([open]) { display: none; }`. Each expected value is Chrome 158's
+  // innerText of the same markup (T287, D:/AI_Scratch/web-to-md/t287-work/chrome_shapes_t287.py).
+  it.each([
+    ['the bug file case', '<p>START</p><dialog><p>DIALOGSECRET</p></dialog><p>END</p>', 'START\n\nEND'],
+    ['a closed dialog that holds code: no code exemption', '<p>a</p><dialog><p>Copy prompt</p><pre>npx run-agent</pre></dialog>', 'a'],
+    ['an upper-case tag', '<p>a</p><DIALOG><p>UPPER</p></DIALOG>', 'a'],
+    ['a closed dialog in a list item', '<ul><li>a<dialog><p>x</p></dialog></li></ul>', '- a'],
+    ['a closed dialog inside an open one', '<dialog open><p>outer</p><dialog><p>inner</p></dialog></dialog>', 'outer'],
+    ['a link does not take its name from one', '<a href="/x">Go<dialog>SECRET</dialog></a>', '[Go](https://example.test/x)'],
+  ])('%s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
+
+  it.each([
+    ['`open`', '<p>a</p><dialog open><p>OPENDIALOG</p></dialog>', 'a\n\nOPENDIALOG'],
+    ['`open="false"`: any value, as for every boolean attribute', '<p>a</p><dialog open="false"><p>OPENFALSE</p></dialog>', 'a\n\nOPENFALSE'],
+    ['an upper-case `OPEN`', '<p>a</p><DIALOG OPEN><p>UPPEROPEN</p></DIALOG>', 'a\n\nUPPEROPEN'],
+  ])('shown with %s', (_label, html, expected) => {
+    expect(md(page(html))).toBe(expected);
+  });
+
+  it('a <main> inside a closed dialog is not the page: the visible content is', () => {
+    expect(md('<html><body><dialog><main><p>DLGMAIN</p></main></dialog><div><p>Visible page</p></div></body></html>'))
+      .toBe('Visible page');
+  });
+
+  // Chrome hides this bare one (`[popover]:not(:popover-open) { display: none; }`); it is converted on purpose: in the
+  // HTML of docs.astro.build the Starlight sidebar is a popover, and Chrome shows it at desktop width once the page has
+  // run, so the attribute alone does not say whether the reader sees it (T287).
+  it('a popover element is still converted: its attribute alone does not say whether the page shows it', () => {
+    expect(md(page('<p>a</p><div popover><p>POPOVER</p></div>'))).toBe('a\n\nPOPOVER');
+  });
+
+  it('includeHidden: true converts a closed dialog too', () => {
+    expect(md(page('<p>a</p><dialog><p>b</p></dialog>'), { includeHidden: true })).toBe('a\n\nb');
+  });
+});
+
 describe('P2A-013: a nested table stays inside its cell', () => {
   it.each([
     ['the bug file case: key/value rows', '<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr>'

@@ -51,7 +51,8 @@ const shownText = (html: string): string => {
   const p = new Parser({
     onopentag(name, attribs) {
       const a = Object.fromEntries(Object.entries(attribs).map(([k, v]) => [k.toLowerCase(), v]));
-      const h = SKIPPED.has(name) || 'hidden' in a || /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(a.style || '');
+      const h = SKIPPED.has(name) || 'hidden' in a || (name === 'dialog' && !('open' in a)) ||
+        /(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(a.style || '');
       hiding.push(h);
       if (h) hidden++;
     },
@@ -188,15 +189,17 @@ describe('past the cap the page shows no more and no less than it did (T260, the
     `<!DOCTYPE html><html><head><title>T</title></head><body><main><p>Start.</p>${body}<p>End.</p></main></body></html>`;
   const md = (html: string): string => htmlToMarkdown(html, { includeFrontmatter: false }).markdown;
 
-  it('shows no hidden text (0.4.17 wrote all seven kinds below 200 levels)', () => {
+  it('shows no hidden text (0.4.17 wrote all seven kinds below 200 levels; a closed dialog since 0.4.23)', () => {
     const hid = '<div hidden><p>HID_ATTR</p></div><span style="display:none">HID_STYLE</span>' +
       '<div style="visibility: hidden">HID_VIS</div><span style="display&#58;none">HID_ENT</span>' +
       '<template><p>HID_TEMPLATE</p></template><noscript><p>HID_NOSCRIPT</p></noscript>' +
       '<select><option>HID_OPTION</option></select><svg><text>HID_SVG</text></svg>' +
-      '<script/><p>HID_SCRIPT</p></script><p>SHOWN_AFTER</p>';
+      '<script/><p>HID_SCRIPT</p></script><dialog><p>HID_DIALOG</p></dialog>' +
+      '<dialog open><p>SHOWN_DIALOG</p></dialog><p>SHOWN_AFTER</p>';
     for (const n of [3, 205, 400, 5000]) {
       const out = md(page(nest(n, hid)));
       expect(out, String(n)).toContain('SHOWN_AFTER');
+      expect(out, String(n)).toContain('SHOWN_DIALOG');
       expect(out, String(n)).toContain('End.');
       expect(out, String(n)).not.toMatch(/HID_/);
     }

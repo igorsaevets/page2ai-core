@@ -30,7 +30,8 @@ export interface HtmlToMarkdownOptions {
   profile?: ProfileName | 'auto';
   includeFrontmatter?: boolean;
   includeImages?: boolean;
-  // Also convert content under the HTML `hidden` attribute, which a browser does not show (default: false).
+  // Also convert content under the HTML `hidden` attribute and inside a `<dialog>` without `open`, which a browser
+  // does not show (default: false).
   includeHidden?: boolean;
 }
 
