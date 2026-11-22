@@ -3,7 +3,8 @@ import { htmlToMarkdown } from '../../src/node/index.js';
 
 // Issue #9: the renderer emits a title-derived H1, then walks the DOM and renders the
 // page's own <h1> — identical on most well-formed pages. The first heading the walk
-// meets is skipped when it normalizes to the title; the window closes there.
+// meets is skipped when it normalizes to the title, and so is the first <h1> that does
+// wherever it stands (P2A-086, toc-nav.test.ts); a title-equal h2-h6 later is content.
 describe('htmlToMarkdown — duplicate title heading (#9)', () => {
   const h1Lines = (md: string): string[] => md.split('\n').filter((l) => /^# /.test(l));
 
@@ -42,15 +43,19 @@ describe('htmlToMarkdown — duplicate title heading (#9)', () => {
     expect(markdown).toContain('## Docs');
   });
 
-  it('does not skip a matching heading that is not the first heading', () => {
-    // Conservative by design: the dedupe window closes at the first heading, matching
-    // or not. A title-equal <h1> buried mid-page keeps both copies.
+  it('skips a title-equal <h1> that is not the first heading (P2A-086)', () => {
+    // Until 0.4.23 the window closed at the first heading, matching or not, and a title-equal <h1> after any other
+    // heading kept both copies. T289 measured what that first heading is on real pages: a docs table of contents'
+    // «On this page», a news kicker, a menu's hidden heading, a blog's site-name <h1>, never a second article with the
+    // page's name: the title came out twice on 52 of 1,065 saved pages and 4 of 236 live ones. Only an <h1> is skipped
+    // that way; a title-equal h2-h6 after another heading stays (the test above).
     const { markdown } = htmlToMarkdown(
       '<html><head><title>Docs</title></head><body><div><h2>Intro</h2><p>Lede.</p><h1>Docs</h1><p>Body.</p></div></body></html>',
       { includeFrontmatter: false },
     );
     expect(markdown).toContain('## Intro');
-    expect(h1Lines(markdown)).toEqual(['# Docs', '# Docs']);
+    expect(h1Lines(markdown)).toEqual(['# Docs']);
+    expect(markdown).toContain('Body.');
   });
 
   it('renders the body h1 untouched when the page has no title', () => {

@@ -71,6 +71,10 @@ interface RenderOpts {
   imageAlt?: boolean;
   // Rendering a <button> that is kept (isControlButton): its aria-hidden elements are left out (an icon-font glyph).
   inButton?: boolean;
+  // Rendering a navigation landmark that is kept (`<nav>`, role=navigation): its headings ("On this page", a menu's
+  // visually hidden "Main navigation") do not count as the page's first heading for the title dedupe (P2A-086), and a
+  // nav inside it is not tested again as a table of contents (one test per outermost nav keeps the cost linear).
+  inNav?: boolean;
 }
 
 // Result of static tab discovery. When `panels` is populated we treat the
@@ -85,10 +89,15 @@ interface TabGroup {
 
 // #9: the synthetic title heading duplicates the page's own <h1> on most well-formed
 // pages (h1 == title). While `pendingTitle` is set, the first heading the walk meets is
-// skipped if it normalizes to the same string; the window closes at that first heading
-// either way, so an identical heading later in the page is content and always renders.
+// skipped if it normalizes to the same string, and so is the first <h1> that does, wherever it
+// stands (P2A-086): a heading above the page's <h1> (a docs table of contents' "On this page", a
+// news kicker, a blog's site-name <h1>) had closed the window, and the title came out twice on 52
+// of 1,065 saved pages and 4 of 236 live ones. An identical h2-h6 later in the page is content and
+// still renders, and headings inside a kept navigation landmark are neither skipped nor counted.
 interface TitleDedupe {
   pendingTitle: string;
+  // A heading outside navigation has been written: from then on only an <h1> can be the title's twin.
+  headingSeen: boolean;
 }
 
 // The caches are emptied when a render starts and again when it ends, so this module keeps no reference to a document
@@ -130,7 +139,7 @@ const renderOnce = (
         if (!unwritten.has(p.el)) capturedPanelEls.add(p.el);
       }));
       const out: string[] = [];
-      const dedupe: TitleDedupe = { pendingTitle };
+      const dedupe: TitleDedupe = { pendingTitle, headingSeen: false };
       inPlacePanels = unwritten;
       walkWithTabs(root, out, opts, tabGroups, capturedPanelEls, dedupe);
       return out;
@@ -799,6 +808,10 @@ const renderNode = (
   if (isAriaHidden(el)) return;
   // A kept button with block content (an accordion's heading, a video card): its icon glyphs stay out (inButton).
   if (tag === 'BUTTON') opts = { ...opts, inButton: true };
+  if (!opts.inNav && (tag === 'NAV' || (el.getAttribute('role') || '').trim().toLowerCase() === 'navigation')) {
+    if (isInPageToc(el, opts)) return;
+    opts = { ...opts, inNav: true };
+  }
   const hidden = hiddenKind(el, opts);
   if (hidden === 'hidden') return;
   if (hidden === 'code') {
@@ -813,12 +826,17 @@ const renderNode = (
     // In one pass: `.replace(/\s*\n\s*/g, ' ')` took seconds on a heading holding a long run of blanks (T241).
     const text = lineBreakRunsToSpace(renderInline(el, opts)).trim();
     if (text) {
-      if (dedupe.pendingTitle) {
-        // Match on textContent, not the rendered markdown: escaping and link syntax
-        // must not defeat the comparison, and the synthetic heading is plain text.
-        const isDup = squeezeText(cleanInline(el.textContent || '')) === dedupe.pendingTitle;
-        dedupe.pendingTitle = '';
-        if (isDup) return;
+      if (dedupe.pendingTitle && !opts.inNav) {
+        // Match on the text, not the rendered markdown: escaping and link syntax must not defeat the comparison, and
+        // the synthetic heading is plain text. The text without hidden parts too: developer.chrome.com puts a hidden
+        // «Stay organized with collections» widget inside every <h1>, so its textContent never matched (P2A-086).
+        const isDup = squeezeText(cleanInline(el.textContent || '')) === dedupe.pendingTitle
+          || squeezeText(cleanInline(nameText(el, opts))) === dedupe.pendingTitle;
+        if (isDup && (!dedupe.headingSeen || level === 1)) {
+          dedupe.pendingTitle = '';
+          return;
+        }
+        dedupe.headingSeen = true;
       }
       out.push('', `${'#'.repeat(level)} ${text}`, '');
     }
@@ -1164,6 +1182,62 @@ const elementById = (doc: Document, id: string): Element | null => {
   }
   return index.get(id) ?? null;
 };
+// An in-page table of contents (P2A-086): a navigation landmark inside the content whose links lead to places further
+// on this same page. It repeats the headings that follow, and docs sites put it inside <main> ahead of the article
+// (Mintlify: 11,624 characters of «On this page» links before the text of code.claude.com/docs/en/mcp). HTML says user
+// agents may use <nav> to decide what to skip in the initial rendering (WHATWG, the nav element); readers drop it.
+// Only a nav that is nothing else is left out, so each test below keeps a nav that also carries content:
+// - at least two links reach an element of this document by its id, outside the nav, and they are at least 80 % of the
+//   links that do not just go to the top (`#`, `#top`): a menu whose `#` links open its own submenus (Bootstrap
+//   collapse), a hash-routed app (`#/settings`) and a nav of links to other pages fail it;
+// - no tab: a tab bar written as a nav (role=tab or tablist, aria-controls, data-toggle) names panels the tab code
+//   writes by its labels;
+// - almost no text outside the links: a label such as «On this page» or «Contents» (40 characters, or a quarter of the
+//   nav's text). be.ch wraps its two skip links and 1,480 characters of the page header in one nav.
+// Measured T289 (D:/AI_Scratch/web-to-md/t289-work/): left out on 15 of 236 live pages agents opened (Mintlify, Read the
+// Docs, the Bootstrap docs, a W3C TAG finding, Datadog, a Hugging Face dataset card, blog sidebars) and 8 of 1,065 saved
+// pages (MDN «In this article», Python docs «contents local»); the text they lose that the output does not repeat is the
+// label and, on 2 pages, entries that paraphrase their sections. With each exception removed in turn, the label limit
+// keeps one real table of contents that carries data (spencermortensen.com: «blocked 96%» on each entry); the tab and
+// target tests decide none of those pages and guard the shapes in tests/node/toc-nav.test.ts.
+const TOC_MIN_TARGETS = 2;
+const TOC_TARGET_SHARE = 0.8;
+const TOC_LABEL_CHARS = 40;
+const TOC_LABEL_SHARE = 0.25;
+const TOC_NOT_A_TOC = '[role="tab"], [role="tablist"], [aria-controls], [data-toggle], [data-bs-toggle]';
+const isInPageToc = (nav: Element, opts: RenderOpts): boolean => {
+  if (nav.querySelector(TOC_NOT_A_TOC)) return false;
+  const doc = nav.ownerDocument as unknown as Document;
+  let page: URL | null = null;
+  try { page = new URL(opts.baseUrl); } catch { page = null; }
+  const samePage = (href: string): string | null => {
+    if (href.startsWith('#')) return href.slice(1);
+    if (!page) return null;
+    let u: URL;
+    try { u = new URL(href, page); } catch { return null; }
+    if (u.origin !== page.origin || u.pathname !== page.pathname || u.search !== page.search) return null;
+    return u.hash.slice(1);
+  };
+  let counted = 0;
+  let targets = 0;
+  let linkChars = 0;
+  for (const a of nav.querySelectorAll('a[href]') as unknown as Iterable<Element>) {
+    linkChars += (a.textContent || '').replace(/\s+/g, ' ').trim().length;
+    const frag = samePage((a.getAttribute('href') || '').trim());
+    if (frag === '' || (frag !== null && frag.toLowerCase() === 'top')) continue;
+    counted++;
+    if (frag === null) continue;
+    let target = elementById(doc, frag);
+    if (!target) {
+      try { target = elementById(doc, decodeURIComponent(frag)); } catch { target = null; }
+    }
+    if (target && !nav.contains(target)) targets++;
+  }
+  if (targets < TOC_MIN_TARGETS || targets < TOC_TARGET_SHARE * counted) return false;
+  const navChars = (nav.textContent || '').replace(/\s+/g, ' ').trim().length;
+  return navChars - linkChars <= Math.max(TOC_LABEL_CHARS, TOC_LABEL_SHARE * navChars);
+};
+
 // The tab group whose container is el, the first one as tabGroups.find answered. The list was scanned for every element:
 // 48,000 tab groups took 9.7 s in 0.4.9 (P2A-041). Keyed by the list, which discoverTabGroups builds once per render
 // and nothing changes afterwards. Emptied with the other caches, though a WeakMap keyed by the list frees itself.
