@@ -1573,23 +1573,52 @@ const nameText = (el: Element, opts: RenderOpts): string => {
   return s;
 };
 
-// The text of code as a browser lays it out: a <br> is a line break, and hidden elements are left out. textContent
-// skips the first and keeps the second: Docusaurus ends every line of a code block with a <br> and writes no newline
-// character, so `cd my-website` and `npx docusaurus start` came out as one line (benchmark corpus, T124), `x<br>y` in
-// inline code read `xy` (C5, codex), and `<code>a<span hidden>s</span>b</code>` printed the hidden s (C7b, codex).
-// Outside a <pre> a newline in the source is only whitespace, so inline code marks a <br> with BR_MARK instead.
+// The text of code as a browser lays it out, which is the text a copy of it gives in Chrome: a <br> is a line break, a
+// block element starts and ends a line, a <p> stands apart by a blank line, the cells of a table row are separated by a
+// tab, and hidden elements are left out. textContent does none of it: Docusaurus ends every line of a code block with a
+// <br> and writes no newline character, so `cd my-website` and `npx docusaurus start` came out as one line (benchmark
+// corpus, T124); Expressive Code, the code blocks of every Starlight site, writes each line as a <div> and no newline
+// character either, so a five-line block came out as one (P2A-092); `x<br>y` in inline code read `xy` (C5, codex), and
+// `<code>a<span hidden>s</span>b</code>` printed the hidden s (C7b, codex). A block boundary adds a line break only
+// where the text does not already stand at the start of a line: a newline in the source at the end of a line <div>, or
+// between two of them, is that break and not one more (Chrome 149 copies `<div>a\n</div><div>b</div>` as "a\nb" and
+// `<div>a</div>\n<div>b</div>` as "a\n\nb", where innerText reads "a\n\nb\n" and "a\n\n\nb"). Outside a <pre> a newline
+// in the source is only whitespace, so inline code marks a line break with BR_MARK instead.
 const BR_MARK = '\u0000';
+// Block-level tags start a line in code; a <p> leaves a blank line, and a table cell is followed by a tab instead.
+const CODE_LINE_TAGS = new Set([...INLINE_BLOCK_GAP].filter((t) => t !== 'TD' && t !== 'TH' && t !== 'P'));
+const isCell = (e: Element | null): boolean => !!e && (e.tagName === 'TD' || e.tagName === 'TH');
 const codeText = (el: Element, opts: RenderOpts, br = '\n'): string => {
   let s = '';
+  // Line breaks the block boundaries met since the last text ask for: 1 starts a line, 2 leaves a blank line. Like
+  // innerText's required line break counts, a run of them is as large as its largest, and none is written before the
+  // first text or after the last.
+  let want = 0;
+  const put = (t: string): void => {
+    if (!t) return;
+    if (want && s) {
+      let have = 0;
+      for (let end = s.length; have < want && s.endsWith(br, end); end -= br.length) have++;
+      s += br.repeat(want - have);
+    }
+    want = 0;
+    s += t;
+  };
   const walk = (n: Node): void => {
-    if (n.nodeType === 3 /* TEXT_NODE */) { s += n.textContent || ''; return; }
+    if (n.nodeType === 3 /* TEXT_NODE */) { put(n.textContent || ''); return; }
     if (n.nodeType !== 1 /* ELEMENT_NODE */) return;
     const e = n as Element;
     // Hidden elements of every kind and skipped ones before the <br>: `<br hidden>` breaks no line, a <style> in code is
     // not code, and a tab panel or an `S:` span inside code is no code tab (T124 panel: codex, grok, agy).
     if (underHiddenAttr(e, opts) || SKIP_TAGS.has(e.tagName)) return;
-    if (e.tagName === 'BR') { s += br; return; }
+    if (e.tagName === 'BR') { put(br); return; }
+    const lines = e.tagName === 'P' ? 2 : CODE_LINE_TAGS.has(e.tagName) ? 1 : 0;
+    want = Math.max(want, lines);
     for (const c of e.childNodes) walk(c);
+    want = Math.max(want, lines);
+    // A cell is followed by a tab, unless a block inside it ended the line: Chrome copies `<td><div>a</div></td><td>b</td>`
+    // as "a\nb".
+    if (isCell(e) && isCell(e.nextElementSibling) && !want) put('\t');
   };
   for (const c of el.childNodes) walk(c);
   return s;
