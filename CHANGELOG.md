@@ -2,6 +2,27 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.26
+
+P2A-090 (found in T295 while reading Mozilla Readability's source through Page2AI) and its measurement (T297).
+
+- **A text/plain file comes back as its text (P2A-090).** A `text/plain` response that is not a `.md` or `.txt` file
+  (source code, JSON, YAML, CSV, a log, a script; GitHub raw serves every text file as `text/plain`) went through the
+  HTML parser: its lines were joined, and markup inside it became links and images. Readability.js from
+  raw.githubusercontent.com (2,812 lines) came out as 3 lines with one invented image. It now comes back as its text in
+  a fenced code block, every line kept, with the language taken from the file's extension, its name (`Dockerfile`,
+  `Makefile`) or its `#!` line, in a fence longer than any run of backticks inside it. That is what a browser does with
+  such a response: it shows the text and never renders it as HTML (MIME Sniffing Standard, sections 7.1 and 7.2).
+  Plain Markdown would not keep it: lines join into paragraphs, `#` lines become headings, `<tag>`s become HTML.
+- **What stays as it was.** A `.md` or `.txt` file is still returned as is, without a fence. A `text/plain` body that
+  starts with `<!doctype html>` or `<html>` is still converted as HTML (GitHub raw serves `.html` files that way). A
+  `text/html` response is converted as before, whatever its address names.
+- **A binary file labelled `text/plain` is refused** with a `FetchProtectionError` («the file is not text») when its
+  first 1,445 bytes hold one of the standard's binary bytes; a terminal escape (ESC) in a log is not one of them.
+- `ConversionResult.source` has a third value, `text-response`, also written as `extractor_source` in the frontmatter;
+  the title is the file's name.
+- Measured before the release: RAW_FILES_MEASUREMENT
+
 ## 0.4.25
 
 P2A-089 (found in T289 while measuring P2A-086) and its measurement (T295).

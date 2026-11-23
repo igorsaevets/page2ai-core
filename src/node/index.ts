@@ -22,10 +22,12 @@ export interface FetchAndConvertOptions extends HtmlToMarkdownOptions, FetchPoli
   signal?: AbortSignal;
 }
 
+type ResponseSource = 'markdown-response' | 'text-response';
+
 // Wrap a raw markdown response in the frontmatter block so downstream consumers
 // see the same shape as html-to-md output. `extractor_source` says that no
 // conversion happened, because a caller measuring conversion quality needs to know.
-const wrapMdWithFrontmatter = (raw: string, url: string, title: string): string => {
+const wrapMdWithFrontmatter = (raw: string, url: string, title: string, source: ResponseSource): string => {
   const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
   const fm = [
     '---',
@@ -34,7 +36,7 @@ const wrapMdWithFrontmatter = (raw: string, url: string, title: string): string 
     `captured_at: ${yq(new Date().toISOString())}`,
     `extractor: ${yq('page2ai-core')}`,
     `extractor_version: ${yq(CORE_VERSION)}`,
-    `extractor_source: ${yq('markdown-response')}`,
+    `extractor_source: ${yq(source)}`,
     '---',
     '',
   ];
@@ -50,9 +52,10 @@ const mdResponseMarkdown = (
   url: string,
   title: string,
   opts: FetchAndConvertOptions,
+  source: ResponseSource = 'markdown-response',
 ): string =>
   (opts.includeFrontmatter ?? true)
-    ? wrapMdWithFrontmatter(raw, url, title)
+    ? wrapMdWithFrontmatter(raw, url, title, source)
     : raw.replace(/^﻿/, '').trim() + '\n';
 
 // A Markdown body must never reach the HTML parser. linkedom will happily accept
@@ -81,6 +84,77 @@ const pathOf = (u: string): string => {
 };
 
 const looksLikeHtml = (s: string): boolean => /^\s*<(!doctype|html)\b/i.test(s);
+
+// Any other text/plain response (source code, JSON, YAML, CSV, a log, a script) is shown by a browser
+// as its text, every line kept, and never as HTML: the MIME Sniffing Standard (§7.1, §7.2) only checks
+// a text/plain body for binary bytes, and Chrome trusts the type otherwise. Markdown has one way to say
+// «this text as it is»: a fenced code block. Left bare, the file's lines would join into paragraphs, its
+// `#` lines would become headings and markup inside it would become links, images or raw HTML (P2A-090:
+// Readability.js from raw.githubusercontent.com, 2,812 lines, came out as 4 lines and an invented image).
+const PLAIN_TEXT_CONTENT_TYPE = /^\s*text\/plain\s*(?:;|$)/i;
+
+// A «binary data byte» of the MIME Sniffing Standard; a text/plain body whose first 1,445 bytes hold
+// one is a binary file mislabelled as text, and a browser downloads it instead of showing it.
+const BINARY_DATA_BYTE = /[\x00-\x08\x0B\x0E-\x1A\x1C-\x1F]/;
+const RESOURCE_HEADER_LENGTH = 1445;
+
+// The fence's language, from the file's extension (or its name, or a #! line): a hint for the reader
+// and for syntax highlighting. An unknown kind gets a fence without one.
+const FENCE_LANGUAGE: Readonly<Record<string, string>> = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+  ts: 'typescript', mts: 'typescript', cts: 'typescript', tsx: 'tsx',
+  py: 'python', pyi: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', kts: 'kotlin',
+  scala: 'scala', swift: 'swift', c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp',
+  cs: 'csharp', php: 'php', pl: 'perl', pm: 'perl', lua: 'lua', r: 'r', dart: 'dart', ex: 'elixir',
+  exs: 'elixir', sh: 'bash', bash: 'bash', zsh: 'zsh', fish: 'fish', ps1: 'powershell', psm1: 'powershell',
+  bat: 'bat', cmd: 'bat', sql: 'sql', json: 'json', jsonc: 'jsonc', json5: 'json5', jsonl: 'json',
+  yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml', svg: 'xml', xsl: 'xml', html: 'html', htm: 'html',
+  css: 'css', scss: 'scss', less: 'less', csv: 'csv', tsv: 'tsv', ini: 'ini', cfg: 'ini', diff: 'diff',
+  patch: 'diff', graphql: 'graphql', gql: 'graphql', proto: 'protobuf', tf: 'hcl', hcl: 'hcl', vue: 'vue',
+  svelte: 'svelte', gradle: 'groovy', groovy: 'groovy',
+  dockerfile: 'dockerfile', makefile: 'makefile', gnumakefile: 'makefile',
+};
+const SHEBANG_LANGUAGE: Readonly<Record<string, string>> = {
+  sh: 'bash', bash: 'bash', dash: 'bash', ksh: 'bash', zsh: 'zsh', python: 'python', node: 'javascript',
+  deno: 'typescript', bun: 'javascript', ruby: 'ruby', perl: 'perl', pwsh: 'powershell', php: 'php',
+};
+
+const fileNameOf = (u: string): string => {
+  const last = pathOf(u).split('/').filter(Boolean).pop() ?? '';
+  try {
+    return decodeURIComponent(last);
+  } catch {
+    return last;
+  }
+};
+
+const fenceLanguage = (name: string, text: string): string => {
+  const lower = name.toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  const byName = FENCE_LANGUAGE[dot > 0 ? lower.slice(dot + 1) : lower];
+  if (byName) return byName;
+  if (dot > 0) return '';
+  // No extension: a script's #! line names its interpreter (`#!/usr/bin/env python3`, `#!/bin/sh`).
+  const shebang = /^#![ \t]*(\S+)([^\n]*)/.exec(text);
+  if (!shebang) return '';
+  let program = (shebang[1] ?? '').split('/').pop() ?? '';
+  if (program === 'env') program = (shebang[2] ?? '').trim().split(/\s+/).find((w) => !w.startsWith('-')) ?? '';
+  return SHEBANG_LANGUAGE[program.replace(/[\d.]+$/, '').toLowerCase()] ?? '';
+};
+
+// The file's text in a fence longer than any run of backticks inside it, so no line of the file can
+// close it (CommonMark: a closing fence is at least as long as the opening one). Line endings become
+// \n and blank lines around the text go; the first line's indentation stays.
+const fencedText = (text: string, language: string): string => {
+  const body = text.replace(/\r\n?/g, '\n').replace(/^(?:[ \t]*\n)+/, '').replace(/\s+$/, '');
+  let longest = 0;
+  const runs = /`+/g;
+  for (let m = runs.exec(body); m; m = runs.exec(body)) {
+    if (m[0].length > longest) longest = m[0].length;
+  }
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${language}\n${body}${body ? '\n' : ''}${fence}`;
+};
 
 export const fetchAndConvert = async (
   url: string,
@@ -129,6 +203,24 @@ export const fetchAndConvert = async (
           'Markdown copy of it. If the address is a Markdown file, pass its .md URL',
         resp.finalUrl,
       );
+    }
+    // Any other text/plain body is a text file (P2A-090): its text, every line kept, in a fence. Until
+    // 0.4.25 it went to the HTML parser, which joined its lines and read markup inside it as tags.
+    if (PLAIN_TEXT_CONTENT_TYPE.test(resp.contentType)) {
+      if (BINARY_DATA_BYTE.test(resp.text.slice(0, RESOURCE_HEADER_LENGTH)) || resp.text.includes('\u0000')) {
+        throw new FetchProtectionError('the file is not text (its first bytes hold binary data)', resp.finalUrl);
+      }
+      const name = fileNameOf(resp.finalUrl);
+      const fenced = fencedText(resp.text, fenceLanguage(name, resp.text));
+      const markdown = mdResponseMarkdown(fenced, resp.finalUrl, name, opts, 'text-response');
+      return {
+        markdown,
+        title: name,
+        baseUrl: resp.finalUrl,
+        charCount: markdown.length,
+        extractedAt: new Date().toISOString(),
+        source: 'text-response',
+      };
     }
   }
 
