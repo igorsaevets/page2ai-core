@@ -2,6 +2,37 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.27
+
+P2A-092 (an AI agent reading https://page2ai.net/research/agent-fetch-outcomes/ through the Page2AI MCP server saw a
+five-line code block as one line; T298).
+
+- **The lines of a code block are the lines a browser shows (P2A-092).** Expressive Code, which renders the code blocks
+  of every Starlight site, writes each line as a `<div>` and no newline character between them, and the text of a code
+  block was read by joining its text nodes: «cd scanners», «python fetch_failures.py --selftest» and three more lines
+  came out as «cd scannerspython fetch_failures.py --selftestpython…». A block element inside code now starts a line, a
+  `<p>` stands apart by a blank line, the cells of a table row are separated by a tab, and a newline the source already
+  has at that place is not doubled: the text is the one Chrome copies when the block is selected. innerText is not that
+  text: it reads `<div>a\n</div><div>b</div>` as two lines with a blank one between, where the screen and the copy show
+  two lines. The same applies to inline code and to a `<pre>` in a table cell.
+- **What stays as it was.** Code whose lines are separated by newline characters (Shiki, Prism, highlight.js, Pygments)
+  or by a `<br>` (Docusaurus) converts as before. Two blank lines in a row inside a code block still come out as one
+  (P2A-094, open).
+- Measured before the release, every page converted from the same saved bytes by 0.4.26 and 0.4.27. Against Chrome
+  149: 19 synthetic `<pre>` layouts, each converted text equal to Chrome's copy of the block (0.4.26: 3 of 19). On
+  real pages: 40 from a Starlight sample (24 developers.cloudflare.com, 2 docs.astro.build, 4 starlight.astro.build, the
+  10 pages of page2ai.net) and the 236 live HTML pages of the T287 sample. On the 9 pages with Expressive Code, 108 of
+  its 109 code blocks (83 of them with more than one line) now equal the block's own copy text (Expressive Code's
+  `data-code`; 0.4.26: 25); the last is a terminal block whose copy button leaves out a `#` comment line by design
+  (`removeCommentsWhenCopyingTerminalFrames`), and 0.4.27 prints the comment the page shows. 87 code blocks changed on
+  10 pages (docs.astro.build's GitHub deploy page is in both samples; also one block on elevenlabs.io and two on
+  dev.meta.ai, whose code lines are `<div>`s as well), and each new text equals what Chrome copies from the same
+  element, rendering the saved bytes at the page's address with its style sheets and no scripts; none of the 0.4.26
+  texts did. Nothing but code blocks changed on those pages, and the
+  other 265 of the 276 conversions are byte for byte as in 0.4.26 (Cloudflare's 24 pages and their 84 code blocks
+  among them). 23 new tests, 19 of them fail on 0.4.26 (the 4 that pass pin what stays); 9 of 9 source mutants are
+  caught, each by its named test.
+
 ## 0.4.26
 
 P2A-090 (found in T295 while reading Mozilla Readability's source through Page2AI) and its measurement (T297).
