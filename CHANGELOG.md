@@ -21,7 +21,14 @@ P2A-090 (found in T295 while reading Mozilla Readability's source through Page2A
   first 1,445 bytes hold one of the standard's binary bytes; a terminal escape (ESC) in a log is not one of them.
 - `ConversionResult.source` has a third value, `text-response`, also written as `extractor_source` in the frontmatter;
   the title is the file's name.
-- Measured before the release: RAW_FILES_MEASUREMENT
+- Measured before the release: in a public dataset of 19,611 page fetches by AI agents (agent-fetch-outcomes), 795
+  (4%) opened files on raw.githubusercontent.com. Of the raw files those agents opened, 675 answered again; 474 were
+  `text/plain`. Replayed through both versions with the same bytes, 0.4.25 parsed 320 of them as HTML: 366,714 lines of
+  files came out as 19,373 lines, with 6 images and 20 links made from markup inside them. 0.4.26 returns each of the
+  320 as one code block whose text equals the file, as an independent CommonMark parser (mdast-util-from-markdown)
+  reads it. The other 355 responses (Markdown and `.txt` files, other types, one `text/plain` body that is HTML) and
+  236 live HTML pages convert byte for byte as in 0.4.25. 26 new tests, 23 of them fail on 0.4.25 (the 3 that pass pin
+  what stays as it was); 7 source mutants, each caught by its named test.
 
 ## 0.4.25
 
