@@ -42,7 +42,9 @@ export interface ConversionResult {
   charCount: number;
   extractedAt: string;
   // 'markdown-response': the URL names a Markdown or text file (.md, .txt, ...), returned as is.
-  source: 'html-parse' | 'markdown-response';
+  // 'text-response': any other text/plain response (source code, JSON, a log, a script), returned
+  // in a fenced code block, every line kept (0.4.26, P2A-090).
+  source: 'html-parse' | 'markdown-response' | 'text-response';
 }
 
 // linkedom builds the document of a FRAGMENT around its first element: `<style>..</style><div>..`
