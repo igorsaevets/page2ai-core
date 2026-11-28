@@ -2090,4 +2090,37 @@ const renderTable = (tbl: Element, out: string[], opts: RenderOpts): void => {
   out.push('');
 };
 
-const normalizeBlank = (s: string): string => s.replace(/\n{3,}/g, '\n\n');
+// Runs of empty lines become one, except inside a fenced code block: there they are the page's code, and Chrome copies
+// every one of them (P2A-094: `import os`, two blank lines, `def main():` came out with one blank line, as did a Python
+// file's PEP 8 spacing and the body of a here-document). A fence is a run of three or more backticks or tildes that this
+// renderer writes at the start of a line or behind its container prefixes: the indentation and marker of a list item
+// (`- ```js`, `1. ```js`, `   ````) and a quote's `> `. A backtick fence's info string has no backtick (CommonMark 0.31.2,
+// 4.5), so a line that opens with a code span is no fence. The fence closes on a run of its character at least as long,
+// with nothing but spaces after it. chooseCodeFence makes every fence longer than any run of its character inside the
+// code, so no line of the code can close it, whatever stands before the run. Outside code the squeeze is the old one:
+// a run of two or more empty lines becomes one. The markers take no space of their own (a lookahead asks for it), so
+// each space before the fence belongs to one place in the pattern: a line of 200 nested quote or list prefixes is read
+// in linear time, where `>[ ]?` beside `[ \t]*` would try every split of its spaces.
+const FENCE_LINE_RE = /^(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])))*[ \t]*(`{3,}|~{3,})(.*)$/;
+const normalizeBlank = (s: string): string => {
+  const out: string[] = [];
+  let fence = '';
+  let blank = false;
+  for (const line of s.split('\n')) {
+    const m = FENCE_LINE_RE.exec(line);
+    if (fence) {
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = '';
+      blank = false;
+    } else if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+      fence = m[1];
+      blank = false;
+    } else if (line === '') {
+      if (blank) continue;
+      blank = true;
+    } else {
+      blank = false;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+};

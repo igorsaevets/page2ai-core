@@ -2,6 +2,32 @@
 
 All notable changes to `@page2ai/core`.
 
+## 0.4.28
+
+P2A-094 (two blank lines in a row inside a code block came out as one; found T298 by a source mutant, fixed T307).
+
+- **Blank lines inside a code block are kept as the page has them (P2A-094).** The last step of the conversion
+  squeezed every run of empty lines to one over the whole output, fenced code included: `import os`, two blank lines,
+  `def main():` came out with one blank line, so a Python file lost its PEP 8 spacing, and a here-document or a Markdown
+  sample shown as code changed. The squeeze now skips fenced code. It follows each fence the renderer writes, at the
+  start of a line or behind a list item's marker and indentation or a quote's `> `, and closes it on a run of the same
+  character at least as long with nothing after it (CommonMark 0.31.2, 4.5). Outside code a run of blank lines is still
+  one.
+- **What stays as it was.** One blank line, blank lines made of spaces (kept, as before), blank lines at either end of a
+  block (dropped, as before), quoted code (a quoted blank line is `> `, which was never squeezed) and all prose.
+- Measured before the release, every page converted from the same saved bytes by 0.4.27 and 0.4.28. Against Chrome
+  158.0.8127.37: 25 synthetic code blocks (two, three and four blank lines; CRLF; `<br>`; Expressive Code blank-line
+  `<div>`s; list items, a nested list, a quote, `<details>`; code holding a ``` or ~~~ fence), each block a CommonMark
+  reader (markdown-it-py 4.2) finds in the Markdown equal to Chrome's copy of the `<pre>` (0.4.27: 9 of 25), with no run
+  of blank lines left in the prose. On real pages: the 40 pages of the Starlight sample are byte-identical (none of
+  their 109 Expressive Code blocks holds two blank lines in a row); of the 236 live HTML pages of the T287 sample, 233
+  are byte-identical and 3 changed, one code block each (habr.com, mikelev.in, blog.korolevalab.com), each differing
+  from 0.4.27's only by its runs of blank lines. The prose of every page is unchanged; 888 code blocks before and after.
+- The pattern that finds a fence behind container prefixes runs in linear time: a line behind 150 nested quote
+  prefixes takes 0.01 ms. A first draft, whose markers took their own spaces, needed 66 ms at 22 prefixes and about
+  doubled with each one more.
+- Tests: 22 new in `tests/node/code-blank-lines.test.ts`; 16 of them fail on 0.4.27, the other 6 pin what stays.
+
 ## 0.4.27
 
 P2A-092 (an AI agent reading https://page2ai.net/research/agent-fetch-outcomes/ through the Page2AI MCP server saw a
